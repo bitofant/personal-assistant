@@ -5,7 +5,8 @@ import PACore
 
 /// Mic via AVAudioEngine, optionally with voice processing (AEC) so remote voices
 /// from laptop speakers are suppressed in the mic stream.
-final class MicCapture {
+/// @unchecked: config-change observer calls back on an arbitrary thread; spike-grade.
+final class MicCapture: @unchecked Sendable {
     private let engine = AVAudioEngine()
     private var observer: NSObjectProtocol?
     private(set) var writer: WavWriter?
@@ -33,10 +34,10 @@ final class MicCapture {
         print("mic: \(actual.map(deviceName) ?? "?"), \(describe(format)), voice processing \(voiceProcessing ? "on" : "off")")
         if let wanted, actual != wanted { print("mic: ⚠️ wanted \(deviceName(wanted)), unit reports another device") }
         // Don't touch mainMixerNode here: with VP on, engine.start fails -10875 (outputNode kAUInitialize), verified live.
-        // Device/format switch stops the engine silently; make it visible.
+        // Device/format switch stops the engine silently (live: fires when the tap aggregate is created) → restart.
         observer = NotificationCenter.default.addObserver(
             forName: .AVAudioEngineConfigurationChange, object: engine, queue: nil
-        ) { _ in print("mic: ⚠️ engine configuration changed → engine stopped") }
+        ) { [weak self] _ in self?.configurationChanged() }
 
         let w = try WavWriter(url: url, format: format)
         writer = w
@@ -45,6 +46,22 @@ final class MicCapture {
         }
         engine.prepare()
         try engine.start()
+    }
+
+    private func configurationChanged() {
+        let f = engine.inputNode.outputFormat(forBus: 0)
+        print("mic: ⚠️ engine configuration changed (running: \(engine.isRunning), now \(describe(f)))")
+        // WAV format is fixed at start; a different format would corrupt the file.
+        guard let w = writer, f.sampleRate == w.format.sampleRate, f.channelCount == w.format.channelCount else {
+            print("mic: ⚠️ format changed mid-recording → not restarting")
+            return
+        }
+        do {
+            try engine.start()
+            print("mic: engine restarted")
+        } catch {
+            print("mic: ⚠️ engine restart failed: \(error)")
+        }
     }
 
     private func setDevice(_ node: AVAudioInputNode, _ dev: AudioObjectID) throws {
