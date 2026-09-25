@@ -1,0 +1,30 @@
+{
+  "name": "personal-assistant",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Meeting transcripts, summaries and search for a personal assistant.",
+  "scripts": {
+    "dev": "tsx watch server/index.ts --dev",
+    "build": "vite build",
+    "start": "tsx server/index.ts",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "test:e2e": "vitest run --config vitest.e2e.config.ts",
+    "typecheck": "tsc -p tsconfig.json --noEmit && tsc -p tsconfig.server.json --noEmit"
+  },
+  "dependencies": {
+    "react": "^19.3.0",
+    "react-dom": "^19.3.0"
+  },
+  "devDependencies": {
+    "@types/node": "^26.6.2",
+    "@types/react": "^19.3.0",
+    "@types/react-dom": "^19.3.0",
+    "@vitejs/plugin-react": "^6.1.1",
+    "tsx": "^4.23.15",
+    "typescript": "^7.0.2",
+    "vite": "^8.3.1",
+    "vitest": "^4.1.11"
+  }
+}

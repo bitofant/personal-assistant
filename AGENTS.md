@@ -38,15 +38,17 @@ The repo has a few components:
   - uploads transcripts to server, with info like calendar name, participants, ...
 
 ## Project state
-- Spec only; nothing scaffolded yet.
+- Server scaffold (settled): config loading/validation, `GET /api/health`, static/Vite serving, systemd scripts. Everything else below = planned, not built.
+- Default port **4200** (4000/4100 taken on the dev box by other services).
 - Monorepo: `server/` (Node backend), `web/` (React frontend), `shared/` (TS wire types), `osx/` (headless Swift CLI).
 - Linux dev box can't build `osx/`; osx work is built/tested on the Mac.
 - `README.md` = user/contributor onboarding; `AGENTS.md` = agent guidance. Keep both current.
 
-## Commands (planned)
+## Commands
 - `npm run dev` (tsx watch + Vite middleware), `npm run build` (frontend → `dist/web`), `npm start`.
 - `npm test`, `npm run test:watch`, `npm run test:e2e`, `npm run typecheck`.
-- osx: `swift build` / `swift test` in `osx/`; `osx/build.sh` (signed `.app` bundle); `osx/install.sh` (LaunchAgent).
+- `./config-gen.sh`, `./install-service.sh`, `./start.sh [dev]`, `./stop.sh`, `./restart.sh`, `./rebuild.sh`.
+- osx (planned): `swift build` / `swift test` in `osx/`; `osx/build.sh` (signed `.app` bundle); `osx/install.sh` (LaunchAgent).
 
 ## Working practices
 - **AGENTS.md hygiene:** record settled decisions + their *why*; mark sections `(settled)` / `(planned, not built)`. Non-obvious fix → note the bug it prevents + "don't regress/simplify". Facts about external tools/APIs checked by running them → say "verified live"; don't trust docs alone.
@@ -79,6 +81,10 @@ The repo has a few components:
 - Deploy: systemd **user** service; `install-service.sh`, `start.sh`/`stop.sh`/`restart.sh`/`rebuild.sh`. `Restart=always`, `StartLimitIntervalSec=0`. Rebuild stages to `dist/web.next` then atomic swap.
 - Server resilience: `uncaughtException`/`unhandledRejection` log-and-continue; static serving try/catch → 503.
 - Markdown rendering: `marked`, raw HTML escaped.
+
+- **Config (settled):** `server/config.ts` `parseConfig` (pure, tested) validates + normalizes (usernames lowercased/trimmed, baseUrl trailing `/` stripped, empty apiKey → `null`); `loadConfig` = thin file wrapper. Unrouted `llm.tasks.X` = feature off, not an error. Task → unknown provider = startup error.
+- **Static serving:** `resolveStaticPath` must stay `startsWith(root + sep)` (bare `startsWith(root)` lets `dist/web.prev` through); traversal → SPA fallback, never a file outside root.
+- **Toolchain versions:** TypeScript 7 (native `tsc`), Vite 8, React 19, Vitest 4, Node 25 on dev box.
 
 ## Server design
 - **Auth (web):** `server/auth.ts` owns all of it; rest of server only calls `authedUser(req)`.
