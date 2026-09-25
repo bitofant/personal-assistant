@@ -22,13 +22,16 @@ final class WavWriter: @unchecked Sendable {
         var layout: String?
         /// Peak per buffer index across all IOProc callbacks (Float32 only).
         var bufferPeaks: [Float] = []
+        /// Peak per channel of non-interleaved buffers; VP mic = 5 ch, shows which carry signal.
+        var channelPeaks: [Float] = []
         var description: String {
-            var s = "\(callbacks) callbacks, \(empty) empty, \(unreadable) unreadable, max \(maxBuffers) buffers/callback"
+            let fmt = { (ps: [Float]) in ps.map { dbfs($0).map { String(format: "%.1f", $0) } ?? "—" }.joined(separator: ", ") }
+            var s = "\(callbacks) callbacks, \(empty) empty, \(unreadable) unreadable"
+            // Only the IOProc path sees buffer lists; "max 0" on AVAudioEngine streams was misleading.
+            if maxBuffers > 0 { s += ", max \(maxBuffers) buffers/callback" }
             if let layout { s += "\n  buffer layout: [\(layout)]" }
-            if !bufferPeaks.isEmpty {
-                let peaks = bufferPeaks.map { dbfs($0).map { String(format: "%.1f", $0) } ?? "—" }
-                s += ", peak dBFS per buffer: [\(peaks.joined(separator: ", "))]"
-            }
+            if !bufferPeaks.isEmpty { s += ", peak dBFS per buffer: [\(fmt(bufferPeaks))]" }
+            if !channelPeaks.isEmpty { s += "\n  peak dBFS per channel: [\(fmt(channelPeaks))]" }
             return s
         }
     }
@@ -51,8 +54,15 @@ final class WavWriter: @unchecked Sendable {
             // Interleaved: one pointer holding frames*channels samples.
             let channels = buffer.format.isInterleaved ? 1 : Int(buffer.format.channelCount)
             let perChannel = Int(buffer.frameLength) * (buffer.format.isInterleaved ? Int(buffer.format.channelCount) : 1)
+            if _stats.channelPeaks.count < channels, !buffer.format.isInterleaved {
+                _stats.channelPeaks = Array(repeating: 0, count: channels)
+            }
             for ch in 0..<channels {
-                _meter.add(UnsafeBufferPointer(start: data[ch], count: perChannel))
+                let samples = UnsafeBufferPointer(start: data[ch], count: perChannel)
+                _meter.add(samples)
+                if !buffer.format.isInterleaved {
+                    _stats.channelPeaks[ch] = max(_stats.channelPeaks[ch], samples.reduce(0) { max($0, abs($1)) })
+                }
             }
         }
     }
