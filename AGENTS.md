@@ -39,6 +39,7 @@ The repo has a few components:
 
 ## Project state
 - Server scaffold (settled): config loading/validation, `GET /api/health`, static/Vite serving, systemd scripts.
+- Server (built): SQLite store, web auth, device pairing + approval, transcript ingest/list/detail, minimal web UI.
 - osx: `pa test-capture` spike + `build.sh` written, **not yet compiled/run on the Mac**.
 - Everything else below = planned, not built.
 - Default port **4200** (4000/4100 taken on the dev box by other services).
@@ -73,6 +74,8 @@ The repo has a few components:
 - **Missing ≠ zero:** unknown values are `null` and render as `—`, never fake 0.
 - **Optional features fail safe:** LLM/embedding outage degrades features, never blocks ingest or loses data.
 - **Agents never restart/redeploy the running service** (`restart.sh`, `systemctl`); ask the user.
+- ⚠️ **Never `pkill -f "tsx server/index.ts"`**: matches sibling services on this box (agent-remote, git-observer) and the agent's own shell. Kill by PID (`$!`) only.
+- Live smoke test without touching repo `config.json`/`data/`: scratch dir with symlinks to repo + own `config.json` on a spare port.
 
 ## Server tech (borrowed from `../agent-remote`)
 - TypeScript everywhere, ESM (`"type":"module"`).
@@ -90,18 +93,30 @@ The repo has a few components:
 - **Toolchain versions:** TypeScript 7 (native `tsc`), Vite 8, React 19, Vitest 4, Node 25 on dev box.
 
 ## Server design
-- **Auth (web):** `server/auth.ts` owns all of it; rest of server only calls `authedUser(req)`.
-  - scrypt (`salt:hash`), server-side sessions in SQLite, HttpOnly cookie.
-  - Signup allowed; login refused unless username in `config.json` `users` (enabled list). Re-read config on change.
+- **Layout (settled):** `app.ts` `createApp({dataDir,getConfig,version,now})` = route table + all API handlers; `index.ts` = config watch, Vite/static, listen. Handlers throw `HttpError`; router → JSON error, unknown → 500 logged.
+  - `api.e2e.test.ts` runs `createApp` in-process on port 0 + temp dir: full HTTP flow, never self-skips.
+  - Injected `now()` everywhere for expiry tests.
+- **Auth (web, built):** `server/auth.ts` owns all of it; rest of server only calls `authedUser(req)`/`requireUser`.
+  - scrypt (`salt:hash`), server-side sessions in SQLite (sha256 of token), HttpOnly SameSite=Lax cookie `pa_session`, 30d sliding.
+  - Signup allowed; login refused (403, only after password OK) unless username in `config.json` `users`.
+  - `config.json` polled (`watchFile`) and reloaded live; invalid edit → keep previous config.
+  - Enabled check **per request**, not just at login: removing a user cuts off sessions + devices immediately. Don't regress.
+  - CSRF: SameSite=Lax + `readJson` requires `content-type: application/json` (415 otherwise).
 - **Multi-tenancy = per-user DB file.** `data/app.db` (users, auth sessions, devices) + `data/users/<userId>.db` (all user content). Isolation by construction, not by `WHERE user_id`. Easy per-user export/delete.
-- **Device pairing (osx):**
-  - Client generates random bearer token, `POST /api/devices/pair {account, deviceName}` with `Authorization: Bearer`.
-  - Server stores **sha256 of token** (never plaintext) + created/last-used timestamps.
-  - ⚠️ Pairing is **pending until approved** in the web UI (short code shown on both sides) — otherwise anyone knowing a username could push data into that account.
-  - Device tokens only authorize device API (`/api/device/*`), never the web UI. Revocable from web UI.
-- **Transcript ingest:** `POST /api/device/transcripts`, idempotent on client-generated `id` (uuid; re-upload = upsert).
-  - Payload: meeting meta (`calendarName`, `eventId`, `seriesId` for recurring, title, start/end, organizer, attendees `{name,email}`), segments `[{start,end,speaker,text}]`, asr/diarization model ids, device id.
-  - Raw transcript stored verbatim; derived data (summary, chunks, embeddings) regenerable from it.
+  - `Store.user(id)`: path from integer id only, never user input. Migrations = append-only SQL list per DB, `PRAGMA user_version`.
+- **Device pairing (osx, built):**
+  - Client generates random bearer token (≥32 chars), `POST /api/devices/pair {account, deviceName}` with `Authorization: Bearer` → 202 `{deviceId, status, pairingCode, expiresAt}`. Same token re-pair = idempotent.
+  - Server stores **sha256 of token** (never plaintext) + created/approved/last-used timestamps.
+  - ⚠️ Pairing is **pending until approved**: user **types** the 6-digit code shown on the Mac into the web UI (web never shows the code). Otherwise anyone knowing a username could push data into that account.
+  - Wrong code deletes the pending pairing (no brute force). Pending expires after 15 min; max 5 pending/user, oldest evicted (pair is unauthenticated).
+  - `GET /api/device/me` works while pending (client polls for approval); every other `/api/device/*` needs active.
+  - Device tokens only authorize device API (`/api/device/*`), never the web UI. Revoke = `DELETE /api/devices/:id`.
+- **Transcript ingest (built):** `POST /api/device/transcripts`, idempotent on client-generated `id` (uuid; re-upload = upsert; 201 created / 200 replaced). Body limit 20 MB.
+  - Payload (`TranscriptUpload`): recording `startedAt/endedAt`, `meeting` (null = ad-hoc; `calendarName`, `eventId`, `seriesId`, title, start/end, organizer, attendees `{name,email}`), segments `[{start,end,speaker,text}]` (seconds from recording start), asr/diarization model ids. Device id comes from the token, not the payload.
+  - `parseTranscriptUpload` normalizes: lowercase uuid + emails, timestamps → UTC ISO (zone required), blank → null, all-null people dropped. Fixture: `shared/fixtures/transcript-upload.json`.
+  - Stored: `raw` (body verbatim) + `data` (normalized JSON) + index columns. Ad-hoc `attendee_count` = null, not 0.
+  - Derived data (summary, chunks, embeddings) regenerable from raw.
+- **Formatting:** `shared/format.ts` (`formatDateTime`, `formatDuration`, `formatOffset`, `formatValue`; missing → `—`) used by UI and logs.
 - **LLM:** `server/llm.ts`, OpenAI-compatible only (`/v1/chat/completions`, `/v1/embeddings`).
   - `config.json` `llm.providers[]` `{id, baseUrl, apiKey?, models[]}`; default = local vLLM/llama.cpp (free).
   - Per-task routing `llm.tasks {summary, search, embed} → provider/model`; paid providers opt-in per task.

@@ -7,7 +7,15 @@ Self-hosted meeting assistant. A headless macOS agent records and transcribes yo
 - `shared/`: wire types (`api.ts`) + JSON fixtures shared with the Swift client
 - `osx/`: headless Swift CLI `pa` (early spike: audio capture test)
 
-Status: early scaffold. Right now the server only answers `GET /api/health` and serves the web shell. See `AGENTS.md` for the design and roadmap.
+Status: early. The server supports:
+- web accounts (sign up, then an admin enables the account)
+- pairing a Mac as a device (you approve it with a 6-digit code)
+- transcript upload from a paired device
+- a web UI to browse transcripts
+
+Summaries and search aren't built yet. See `AGENTS.md` for the design and roadmap.
+
+Data lives in `data/` (gitignored): `app.db` holds accounts, sessions and devices, and `users/<id>.db` holds one user's transcripts.
 
 ## Server setup (Linux)
 
@@ -21,7 +29,7 @@ npm run dev            # http://localhost:4200, Vite HMR on the same port
 
 All configuration is in `config.json`. There are no env vars.
 
-- `users`: usernames allowed to log in. Anyone can register, but an account is disabled until it's listed here.
+- `users`: usernames allowed to log in. Anyone can register, but an account is disabled until it's listed here. The server reloads `config.json` automatically, so you don't need to restart it. Removing a username logs that user out right away and blocks their devices.
 - `llm.providers`: OpenAI-compatible endpoints (local vLLM/llama.cpp, OpenRouter, …).
 - `llm.tasks`: routes `summary` / `search` / `embed` to a provider+model. If a task isn't routed, that feature is off.
 
@@ -37,7 +45,7 @@ All configuration is in `config.json`. There are no env vars.
 
 ```sh
 npm test               # pure unit tests (fast; no network/processes)
-npm run test:e2e       # live tests against a running server/LLM; they skip themselves if it's down
+npm run test:e2e       # HTTP flow on an in-process server, plus live tests that skip themselves if the server/LLM is down
 npm run typecheck      # must pass before a PR
 ```
 

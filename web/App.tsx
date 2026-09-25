@@ -1,20 +1,211 @@
-import { useEffect, useState } from "react";
-import type { HealthResponse } from "../shared/api.js";
+import { useCallback, useEffect, useState, type FormEvent, type ReactNode } from "react";
+import type {
+  DeviceInfo,
+  DeviceListResponse,
+  MeResponse,
+  SignupResponse,
+  TranscriptDetail,
+  TranscriptListItem,
+  TranscriptListResponse,
+} from "../shared/api.js";
+import { formatDateTime, formatDuration, formatOffset, formatValue } from "../shared/format.js";
+import { api, ApiError } from "./api.js";
+
+function useHash(): string {
+  const [hash, setHash] = useState(location.hash || "#/");
+  useEffect(() => {
+    const on = () => setHash(location.hash || "#/");
+    addEventListener("hashchange", on);
+    return () => removeEventListener("hashchange", on);
+  }, []);
+  return hash;
+}
 
 export function App() {
-  const [health, setHealth] = useState<HealthResponse | null>(null);
-  const [error, setError] = useState<string | null>(null);
+  const [me, setMe] = useState<MeResponse | null | undefined>(undefined);
+  const hash = useHash();
 
   useEffect(() => {
-    fetch("/api/health")
-      .then((r) => (r.ok ? (r.json() as Promise<HealthResponse>) : Promise.reject(new Error(`HTTP ${r.status}`))))
-      .then(setHealth, (e: Error) => setError(e.message));
+    api<MeResponse>("/auth/me").then(setMe, () => setMe(null));
   }, []);
 
+  if (me === undefined) return <Shell>Loading…</Shell>;
+  if (me === null) return <Shell><Login onLogin={setMe} /></Shell>;
+
+  const logout = () => api("/auth/logout", { method: "POST" }).finally(() => setMe(null));
+  const detail = /^#\/t\/(.+)$/.exec(hash);
   return (
-    <main style={{ fontFamily: "system-ui, sans-serif", padding: "2rem" }}>
-      <h1>personal-assistant</h1>
-      <p>Server: {error ? `unreachable (${error})` : health ? `ok, v${health.version}` : "—"}</p>
+    <Shell>
+      <nav style={{ display: "flex", gap: "1rem", alignItems: "baseline" }}>
+        <a href="#/">Transcripts</a>
+        <a href="#/devices">Devices</a>
+        <span style={{ marginLeft: "auto" }}>{me.username}</span>
+        <button onClick={logout}>Log out</button>
+      </nav>
+      {hash === "#/devices" ? <Devices /> : detail ? <Transcript id={detail[1]} /> : <Transcripts />}
+    </Shell>
+  );
+}
+
+function Shell({ children }: { children: ReactNode }) {
+  return (
+    <main style={{ fontFamily: "system-ui, sans-serif", padding: "1rem 2rem", maxWidth: "60rem", margin: "0 auto" }}>
+      <h1 style={{ fontSize: "1.3rem" }}>personal-assistant</h1>
+      {children}
     </main>
+  );
+}
+
+function ErrorLine({ error }: { error: string | null }) {
+  return error ? <p style={{ color: "crimson" }}>{error}</p> : null;
+}
+
+function Login({ onLogin }: { onLogin: (me: MeResponse) => void }) {
+  const [username, setUsername] = useState("");
+  const [password, setPassword] = useState("");
+  const [msg, setMsg] = useState<string | null>(null);
+
+  const submit = (mode: "login" | "signup") => async (e?: FormEvent) => {
+    e?.preventDefault();
+    setMsg(null);
+    try {
+      if (mode === "login") return onLogin(await api<MeResponse>("/auth/login", { body: { username, password } }));
+      const r = await api<SignupResponse>("/auth/signup", { body: { username, password } });
+      if (r.enabled) onLogin({ username: r.username });
+      else setMsg(`Account "${r.username}" created. Ask the admin to enable it in config.json, then log in.`);
+    } catch (err) {
+      setMsg((err as Error).message);
+    }
+  };
+
+  return (
+    <form onSubmit={submit("login")} style={{ display: "grid", gap: "0.5rem", maxWidth: "20rem" }}>
+      <input placeholder="username" autoComplete="username" value={username} onChange={(e) => setUsername(e.target.value)} />
+      <input placeholder="password" type="password" autoComplete="current-password" value={password} onChange={(e) => setPassword(e.target.value)} />
+      <div style={{ display: "flex", gap: "0.5rem" }}>
+        <button type="submit">Log in</button>
+        <button type="button" onClick={() => void submit("signup")()}>Sign up</button>
+      </div>
+      <ErrorLine error={msg} />
+    </form>
+  );
+}
+
+function Transcripts() {
+  const [items, setItems] = useState<TranscriptListItem[] | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  useEffect(() => {
+    api<TranscriptListResponse>("/transcripts").then((r) => setItems(r.transcripts), (e: Error) => setError(e.message));
+  }, []);
+
+  if (error) return <ErrorLine error={error} />;
+  if (!items) return <p>Loading…</p>;
+  if (!items.length) return <p>No transcripts yet. Pair a Mac under <a href="#/devices">Devices</a>.</p>;
+  return (
+    <table style={{ width: "100%", borderCollapse: "collapse" }}>
+      <thead>
+        <tr style={{ textAlign: "left" }}>
+          <th>When</th><th>Title</th><th>Duration</th><th>Attendees</th><th>Calendar</th><th>Device</th>
+        </tr>
+      </thead>
+      <tbody>
+        {items.map((t) => (
+          <tr key={t.id}>
+            <td>{formatDateTime(t.startedAt)}</td>
+            <td><a href={`#/t/${t.id}`}>{t.title ?? "(ad-hoc call)"}</a></td>
+            <td>{formatDuration(t.startedAt, t.endedAt)}</td>
+            <td>{formatValue(t.attendeeCount)}</td>
+            <td>{formatValue(t.calendarName)}</td>
+            <td>{formatValue(t.deviceName)}</td>
+          </tr>
+        ))}
+      </tbody>
+    </table>
+  );
+}
+
+function Transcript({ id }: { id: string }) {
+  const [t, setT] = useState<TranscriptDetail | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  useEffect(() => {
+    api<TranscriptDetail>(`/transcripts/${encodeURIComponent(id)}`).then(setT, (e: Error) => setError(e.message));
+  }, [id]);
+
+  if (error) return <ErrorLine error={error} />;
+  if (!t) return <p>Loading…</p>;
+  const m = t.meeting;
+  return (
+    <article>
+      <h2>{m?.title ?? "(ad-hoc call)"}</h2>
+      <p>
+        {formatDateTime(t.startedAt)} · {formatDuration(t.startedAt, t.endedAt)} · calendar {formatValue(m?.calendarName)} · device{" "}
+        {formatValue(t.deviceName)}
+      </p>
+      {m && m.attendees.length > 0 && (
+        <p>Attendees: {m.attendees.map((a) => a.name ?? a.email).join(", ")}</p>
+      )}
+      <div>
+        {t.segments.map((s, i) => (
+          <p key={i} style={{ margin: "0.3rem 0" }}>
+            <span style={{ color: "#888", fontVariantNumeric: "tabular-nums" }}>{formatOffset(s.start)}</span>{" "}
+            <strong>{formatValue(s.speaker)}:</strong> {s.text}
+          </p>
+        ))}
+      </div>
+      <p style={{ color: "#888", fontSize: "0.8rem" }}>
+        ASR {t.asrModel} · diarization {formatValue(t.diarizationModel)} · received {formatDateTime(t.receivedAt)}
+      </p>
+    </article>
+  );
+}
+
+function Devices() {
+  const [devices, setDevices] = useState<DeviceInfo[] | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [codes, setCodes] = useState<Record<string, string>>({});
+
+  const load = useCallback(() => {
+    api<DeviceListResponse>("/devices").then((r) => setDevices(r.devices), (e: Error) => setError(e.message));
+  }, []);
+  useEffect(load, [load]);
+
+  const act = (p: Promise<unknown>) =>
+    p.then(() => setError(null), (e: ApiError) => setError(e.message)).finally(load);
+
+  if (!devices) return error ? <ErrorLine error={error} /> : <p>Loading…</p>;
+  return (
+    <section>
+      <p>
+        Pair a Mac with <code>pa pair &lt;server&gt; &lt;account&gt;</code>, then enter the code it shows. <button onClick={load}>Refresh</button>
+      </p>
+      <ErrorLine error={error} />
+      {!devices.length && <p>No devices.</p>}
+      <ul>
+        {devices.map((d) => (
+          <li key={d.id} style={{ marginBottom: "0.5rem" }}>
+            <strong>{d.name}</strong> — {d.status}
+            {d.status === "pending" ? (
+              <>
+                {" "}(expires {formatDateTime(d.expiresAt)}){" "}
+                <input
+                  placeholder="6-digit code"
+                  inputMode="numeric"
+                  size={8}
+                  value={codes[d.id] ?? ""}
+                  onChange={(e) => setCodes({ ...codes, [d.id]: e.target.value })}
+                />{" "}
+                <button onClick={() => act(api(`/devices/${d.id}/approve`, { body: { pairingCode: codes[d.id] ?? "" } }))}>Approve</button>{" "}
+                <button onClick={() => act(api(`/devices/${d.id}`, { method: "DELETE" }))}>Reject</button>
+              </>
+            ) : (
+              <>
+                {" "}· paired {formatDateTime(d.approvedAt)} · last used {formatDateTime(d.lastUsedAt)}{" "}
+                <button onClick={() => confirm(`Revoke ${d.name}?`) && act(api(`/devices/${d.id}`, { method: "DELETE" }))}>Revoke</button>
+              </>
+            )}
+          </li>
+        ))}
+      </ul>
+    </section>
   );
 }
