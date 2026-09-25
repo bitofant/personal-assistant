@@ -38,7 +38,9 @@ The repo has a few components:
   - uploads transcripts to server, with info like calendar name, participants, ...
 
 ## Project state
-- Server scaffold (settled): config loading/validation, `GET /api/health`, static/Vite serving, systemd scripts. Everything else below = planned, not built.
+- Server scaffold (settled): config loading/validation, `GET /api/health`, static/Vite serving, systemd scripts.
+- osx: `pa test-capture` spike + `build.sh` written, **not yet compiled/run on the Mac**.
+- Everything else below = planned, not built.
 - Default port **4200** (4000/4100 taken on the dev box by other services).
 - Monorepo: `server/` (Node backend), `web/` (React frontend), `shared/` (TS wire types), `osx/` (headless Swift CLI).
 - Linux dev box can't build `osx/`; osx work is built/tested on the Mac.
@@ -48,7 +50,8 @@ The repo has a few components:
 - `npm run dev` (tsx watch + Vite middleware), `npm run build` (frontend → `dist/web`), `npm start`.
 - `npm test`, `npm run test:watch`, `npm run test:e2e`, `npm run typecheck`.
 - `./config-gen.sh`, `./install-service.sh`, `./start.sh [dev]`, `./stop.sh`, `./restart.sh`, `./rebuild.sh`.
-- osx (planned): `swift build` / `swift test` in `osx/`; `osx/build.sh` (signed `.app` bundle); `osx/install.sh` (LaunchAgent).
+- osx: `swift build` / `swift test` in `osx/`; `osx/build.sh [identity]` → signed `osx/build/PA.app`; `osx/install.sh` (LaunchAgent, planned).
+- Run bundle: `open -W --stdout $(tty) --stderr $(tty) osx/build/PA.app --args test-capture`.
 
 ## Working practices
 - **AGENTS.md hygiene:** record settled decisions + their *why*; mark sections `(settled)` / `(planned, not built)`. Non-obvious fix → note the bug it prevents + "don't regress/simplify". Facts about external tools/APIs checked by running them → say "verified live"; don't trust docs alone.
@@ -112,10 +115,15 @@ The repo has a few components:
 - **Headless — no UI.** Swift 6 CLI `pa`; runs as a background process. Swift because audio taps, EventKit, CoreML ASR are native-only.
 - Min **macOS 26**, Apple Silicon only (arm64).
 - **Toolchain: Command Line Tools only** (`xcode-select --install`); no Xcode project/IDE. SwiftPM package in `osx/` (`Package.swift`).
+- Targets: `PACore` (pure: arg parsing, tap target selection, level meter; unit-tested) ⟂ `pa` (thin Core Audio/AVFoundation wrappers; tested by running on the Mac).
+- Bundle id **`com.bitofant.pa`**; default signing identity name `PA Local Signing`.
+- No swift-argument-parser: too few flags.
 - **Minimal `.app` bundle, still headless** — why: TCC (mic/system audio/calendar) grants attach to a signed bundle id + `Info.plist` usage strings; bare binaries under launchd get flaky/misattributed prompts.
   - `osx/build.sh`: `swift build -c release` → assemble `PA.app/Contents/{Info.plist,MacOS/pa}` → codesign.
   - `Info.plist`: `LSBackgroundOnly`=true (no Dock/menu bar/window); `NSMicrophoneUsageDescription`, `NSAudioCaptureUsageDescription`, `NSCalendarsFullAccessUsageDescription`.
   - **Sign with a stable self-signed code-signing cert** (Keychain Access → Certificate Assistant). Ad-hoc signing changes identity every build → TCC re-prompts/stale grants. No paid Apple dev account.
+  - No hardened runtime (would need audio-input entitlement; no notarization anyway).
+  - ⚠️ TCC attributes to the *responsible* process: bare `PA.app/Contents/MacOS/pa` from Terminal → grants go to Terminal. Launch via `open`/launchd. (Expected; confirm in spike.)
 - **CLI subcommands:** `pa pair <server> <account>` (prompts, shows pairing code), `pa status`, `pa run` (daemon mode), `pa test-capture` (spike, below).
 - **Autostart:** LaunchAgent `~/Library/LaunchAgents/<bundle id>.plist` (`RunAtLoad`, `KeepAlive`) running `PA.app/Contents/MacOS/pa run`; installed by `osx/install.sh`. **First run manually** so TCC prompts appear.
 - **Calendar:** EventKit (reads whatever accounts macOS Calendar syncs: Exchange/Google/iCloud). Config picks which calendars are "work". No direct Graph/Google API.
@@ -124,7 +132,10 @@ The repo has a few components:
   - System audio: Core Audio **process taps** (`AudioHardwareCreateProcessTap`, macOS 14.2+). Permission = "System Audio Recording Only" (not Screen Recording); no public API to pre-check — prompt fires on first tap.
   - Tap scope: meeting-app processes (Zoom). Browser meetings: audio comes from browser helper processes → tap whole browser; global tap as fallback (picks up notification sounds/music).
   - Mic = local user (free speaker ID). ⚠️ On laptop speakers, mic also hears remotes → duplicate text attributed to me; AEC + dropping mic segments that duplicate system-stream text.
-  - Status: **not verified live yet.** First osx milestone = `pa test-capture` spike: 30s Zoom tap + mic → two WAVs; confirms permissions + bundle/signing approach before building on it.
+  - Status: **not verified live yet.** `pa test-capture [--seconds N] [--app PREFIX]... [--global] [--out DIR]`: tap + mic → two WAVs in `~/pa-test-capture/` (not ~/Desktop: extra TCC prompt) + peak/RMS summary.
+  - Tap = `CATapDescription` (mixdown of process objects, `muteBehavior=.unmuted`, private) → private aggregate device (default output as main sub-device, tap auto-start) → IOProc block → `AVAudioFile`.
+  - Targets by **bundle-id prefix with `.` boundary** over `kAudioHardwarePropertyProcessObjectList` (catches helpers, e.g. `com.google.Chrome.helper`).
+  - Denied system-audio permission = **silent buffers, no error** → summary flags all-zero streams. Don't drop this check.
 - **Meeting detection:** calendar event window AND (mic in use via `kAudioDevicePropertyDeviceIsRunningSomewhere` OR meeting app running: Zoom/Teams/Webex/browser Meet). Ad-hoc calls without event still recorded (no calendar meta).
 - **Transcription:** on-device, behind a `Transcriber` protocol.
   - Default: **FluidAudio** (CoreML/ANE) Parakeet TDT v3 (multilingual, fast).

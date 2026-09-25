@@ -11,3 +11,4 @@ osx/.build/
 .DS_Store
 personal-assistant.pid
 personal-assistant.log
+osx/build/

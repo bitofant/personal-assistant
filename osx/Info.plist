@@ -1,0 +1,28 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>CFBundleIdentifier</key>
+	<string>com.bitofant.pa</string>
+	<key>CFBundleName</key>
+	<string>PA</string>
+	<key>CFBundleExecutable</key>
+	<string>pa</string>
+	<key>CFBundlePackageType</key>
+	<string>APPL</string>
+	<key>CFBundleVersion</key>
+	<string>1</string>
+	<key>CFBundleShortVersionString</key>
+	<string>0.0.0</string>
+	<key>LSMinimumSystemVersion</key>
+	<string>26.0</string>
+	<key>LSBackgroundOnly</key>
+	<true/>
+	<key>NSMicrophoneUsageDescription</key>
+	<string>PA records your side of meetings to transcribe them.</string>
+	<key>NSAudioCaptureUsageDescription</key>
+	<string>PA records meeting audio from apps like Zoom to transcribe it.</string>
+	<key>NSCalendarsFullAccessUsageDescription</key>
+	<string>PA reads your work calendar to know when meetings happen and who attends.</string>
+</dict>
+</plist>

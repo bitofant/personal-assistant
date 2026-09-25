@@ -5,7 +5,7 @@ Self-hosted meeting assistant. A headless macOS agent records and transcribes yo
 - `server/`: Node/TypeScript backend (plain `node:http`, SQLite); also serves the web UI
 - `web/`: React + Vite frontend
 - `shared/`: wire types (`api.ts`) + JSON fixtures shared with the Swift client
-- `osx/`: headless Swift CLI `pa` (planned)
+- `osx/`: headless Swift CLI `pa` (early spike: audio capture test)
 
 Status: early scaffold. Right now the server only answers `GET /api/health` and serves the web shell. See `AGENTS.md` for the design and roadmap.
 
@@ -40,3 +40,20 @@ npm test               # pure unit tests (fast; no network/processes)
 npm run test:e2e       # live tests against a running server/LLM; they skip themselves if it's down
 npm run typecheck      # must pass before a PR
 ```
+
+## macOS agent (`osx/`)
+
+Requirements: Apple Silicon, macOS 26, Command Line Tools (`xcode-select --install`). You don't need Xcode.
+
+One-time setup: create a self-signed code-signing certificate named `PA Local Signing`. In Keychain Access, go to Certificate Assistant → Create a Certificate…, then pick Identity Type "Self Signed Root" and Certificate Type "Code Signing". Permission grants stick to this signing identity, so they survive rebuilds.
+
+```sh
+cd osx
+swift test             # pure unit tests
+./build.sh             # → build/PA.app (signed, headless)
+open -W --stdout $(tty) --stderr $(tty) build/PA.app --args test-capture --seconds 30
+```
+
+`test-capture` records Zoom audio through a Core Audio process tap, plus your mic, into two WAVs in `~/pa-test-capture/`. It then prints peak/RMS levels for each stream. Use `--app <bundle-id-prefix>` to tap another app (e.g. `com.google.Chrome`), or `--global` to tap all system audio. If a stream is flagged "all zeros", the permission was probably denied. Check System Settings → Privacy & Security → Microphone / Screen & System Audio Recording.
+
+Launch it with `open` as shown. If you run the binary directly from a terminal, macOS attributes the permission prompts to the terminal app instead of PA.
