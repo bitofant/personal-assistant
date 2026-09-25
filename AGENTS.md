@@ -47,6 +47,19 @@ The repo has a few components:
 - Linux dev box can't build `osx/`; osx work is built/tested on the Mac.
 - `README.md` = user/contributor onboarding; `AGENTS.md` = agent guidance. Keep both current.
 
+## Roadmap (next up, in order)
+- Order = riskiest unknowns first, then thinnest end-to-end slice (Mac audio → server transcript), then value-add. Tick off / reorder as done.
+1. **osx: run `pa test-capture` on the Mac** — compile, sign, verify TCC prompts + non-silent tap/mic WAVs (Zoom, browser, global). Record findings "verified live".
+2. **osx: transcription spike** — FluidAudio Parakeet v3 + diarization on spike WAVs → `[{start,end,speaker,text}]`; check speed/accuracy, mic-echo dedup. Behind `Transcriber` protocol.
+3. **osx: `pa pair` / `pa status`** — Keychain token, app-support `config.json`, poll `/api/device/me`; Swift `Codable` mirrors of `shared/api.ts` + fixture decode tests.
+4. **osx: `pa upload <wav-dir>`** — manual transcribe + upload → first real end-to-end transcript on server.
+5. **server: LLM client + job queue** — `server/llm.ts` (chat/embeddings, `/models` health), SQLite jobs w/ backoff, fail-safe (queued, never lost).
+6. **server: summaries** — instruction resolution (series > type > default), 1on1 rule + LLM classify fallback, store model/instructions, re-summarize; web UI for instructions + summary view.
+7. **server: search v1** — FTS5 over segments/titles/attendees; web search page. Then v2: chunk+embed w/ `sqlite-vec`, hybrid merge, optional RAG answer.
+8. **osx: daemon (`pa run`)** — EventKit work calendars, meeting detection, auto capture → transcribe → persistent upload queue, raw-audio retention; `osx/install.sh` LaunchAgent; `os.Logger` + log file.
+9. **Speaker naming** — label speakers in web UI, per-user voice embeddings, match vs attendees; LLM name proposals never overwrite user labels.
+10. **Ops/polish** — per-user export/delete, device list/revoke UI polish, backups of `data/`.
+
 ## Commands
 - `npm run dev` (tsx watch + Vite middleware), `npm run build` (frontend → `dist/web`), `npm start`.
 - `npm test`, `npm run test:watch`, `npm run test:e2e`, `npm run typecheck`.
