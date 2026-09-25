@@ -1,0 +1,15 @@
+{
+  "server": { "port": 4200 },
+  "users": ["alice"],
+  "llm": {
+    "providers": [
+      { "id": "local", "baseUrl": "http://localhost:8000/v1", "apiKey": null, "models": ["qwen3-32b", "bge-m3"] },
+      { "id": "openrouter", "baseUrl": "https://openrouter.ai/api/v1", "apiKey": "sk-or-...", "models": ["anthropic/claude-sonnet-4.5"] }
+    ],
+    "tasks": {
+      "summary": { "provider": "local", "model": "qwen3-32b" },
+      "search": { "provider": "local", "model": "qwen3-32b" },
+      "embed": { "provider": "local", "model": "bge-m3" }
+    }
+  }
+}

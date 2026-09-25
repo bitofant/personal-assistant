@@ -9,3 +9,5 @@ pr-description.md
 osx/.build/
 *.app/
 .DS_Store
+personal-assistant.pid
+personal-assistant.log
