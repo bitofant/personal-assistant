@@ -18,8 +18,18 @@ final class WavWriter: @unchecked Sendable {
         var empty = 0
         var unreadable = 0
         var maxBuffers = 0
+        /// First IOProc buffer list, e.g. "1ch 2048B, 2ch 4096B"; shows which buffer is the tap.
+        var layout: String?
+        /// Peak per buffer index across all IOProc callbacks (Float32 only).
+        var bufferPeaks: [Float] = []
         var description: String {
-            "\(callbacks) callbacks, \(empty) empty, \(unreadable) unreadable, max \(maxBuffers) buffers/callback"
+            var s = "\(callbacks) callbacks, \(empty) empty, \(unreadable) unreadable, max \(maxBuffers) buffers/callback"
+            if let layout { s += "\n  buffer layout: [\(layout)]" }
+            if !bufferPeaks.isEmpty {
+                let peaks = bufferPeaks.map { dbfs($0).map { String(format: "%.1f", $0) } ?? "—" }
+                s += ", peak dBFS per buffer: [\(peaks.joined(separator: ", "))]"
+            }
+            return s
         }
     }
 
@@ -47,19 +57,65 @@ final class WavWriter: @unchecked Sendable {
         }
     }
 
+    /// Aggregate IOProc input. Can hold >1 buffer (sub-device input streams and/or tap split per channel),
+    /// so `AVAudioPCMBuffer(bufferListNoCopy:)` rejects it (live: 2 buffers, every callback unreadable).
     func write(bufferList: UnsafePointer<AudioBufferList>) {
-        // >1 buffer for an interleaved tap = aggregate sub-device inputs mixed in with the tap.
-        let n = Int(bufferList.pointee.mNumberBuffers)
-        guard let buf = AVAudioPCMBuffer(pcmFormat: format, bufferListNoCopy: bufferList, deallocator: nil) else {
+        let abl = UnsafeMutableAudioBufferListPointer(UnsafeMutablePointer(mutating: bufferList))
+        let isFloat = format.commonFormat == .pcmFormatFloat32
+        let peaks: [Float] = abl.map { b in
+            guard isFloat, let p = b.mData else { return 0 }
+            let n = Int(b.mDataByteSize) / MemoryLayout<Float>.size
+            return UnsafeBufferPointer(start: p.assumingMemoryBound(to: Float.self), count: n)
+                .reduce(0) { max($0, abs($1)) }
+        }
+        lock.withLock {
+            _stats.maxBuffers = max(_stats.maxBuffers, abl.count)
+            if _stats.layout == nil {
+                _stats.layout = abl.map { "\($0.mNumberChannels)ch \($0.mDataByteSize)B" }.joined(separator: ", ")
+            }
+            if _stats.bufferPeaks.count < peaks.count {
+                _stats.bufferPeaks += Array(repeating: 0, count: peaks.count - _stats.bufferPeaks.count)
+            }
+            for (i, p) in peaks.enumerated() { _stats.bufferPeaks[i] = max(_stats.bufferPeaks[i], p) }
+        }
+        guard let buf = extractTap(abl) else {
             lock.withLock {
                 _stats.callbacks += 1
                 _stats.unreadable += 1
-                _stats.maxBuffers = max(_stats.maxBuffers, n)
             }
             return
         }
-        lock.withLock { _stats.maxBuffers = max(_stats.maxBuffers, n) }
         write(buf)
+    }
+
+    /// Copies the tap's samples into a buffer in `format` (interleaved). Aggregate lists sub-device
+    /// streams before taps, so the tap = the *last* matching buffer(s).
+    private func extractTap(_ abl: UnsafeMutableAudioBufferListPointer) -> AVAudioPCMBuffer? {
+        let channels = Int(format.channelCount)
+        let bytesPerSample = Int(format.streamDescription.pointee.mBitsPerChannel / 8)
+        guard format.isInterleaved, bytesPerSample > 0 else { return nil }
+        // One buffer carrying all channels interleaved.
+        if let b = abl.last(where: { Int($0.mNumberChannels) == channels }), let src = b.mData {
+            let frames = Int(b.mDataByteSize) / (bytesPerSample * channels)
+            guard let out = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: AVAudioFrameCount(frames)),
+                  let dst = out.mutableAudioBufferList.pointee.mBuffers.mData else { return nil }
+            out.frameLength = AVAudioFrameCount(frames)
+            memcpy(dst, src, frames * bytesPerSample * channels)
+            return out
+        }
+        // One mono buffer per channel → interleave.
+        let monos = Array(abl.suffix(channels))
+        guard format.commonFormat == .pcmFormatFloat32, monos.count == channels,
+              monos.allSatisfy({ $0.mNumberChannels == 1 && $0.mData != nil }) else { return nil }
+        let frames = monos.map { Int($0.mDataByteSize) / MemoryLayout<Float>.size }.min() ?? 0
+        guard let out = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: AVAudioFrameCount(frames)),
+              let dst = out.floatChannelData?[0] else { return nil }
+        out.frameLength = AVAudioFrameCount(frames)
+        for (c, b) in monos.enumerated() {
+            let src = b.mData!.assumingMemoryBound(to: Float.self)
+            for f in 0..<frames { dst[f * channels + c] = src[f] }
+        }
+        return out
     }
 
     func close() { lock.withLock { file.close() } }
