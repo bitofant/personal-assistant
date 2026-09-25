@@ -48,7 +48,9 @@ func testCapture(_ o: TestCaptureOptions) async throws {
     }
     // Mic first: enabling VP reconfigures the output device, which can stall a tap
     // aggregate already clocked by it (suspected: tap got 0.5s of 30s in first live run).
-    if o.mic { try mic.start(voiceProcessing: o.voiceProcessing, writingTo: micURL) }
+    if o.mic {
+        try mic.start(voiceProcessing: o.voiceProcessing, deviceUID: try loadAgentConfig().micDeviceUID, writingTo: micURL)
+    }
     if o.system {
         try system.start(processes: targets.map(\.objectID), global: o.global, excluding: own, writingTo: systemURL)
     }

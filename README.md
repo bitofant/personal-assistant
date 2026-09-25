@@ -64,4 +64,6 @@ open -W --stdout $(tty) --stderr $(tty) build/PA.app --args test-capture --secon
 
 `test-capture` records Zoom audio through a Core Audio process tap, plus your mic, into two WAVs in `~/pa-test-capture/`. It then prints peak/RMS levels for each stream. Use `--app <bundle-id-prefix>` to tap another app (e.g. `com.google.Chrome`), or `--global` to tap all system audio. If a stream is flagged "all zeros", the permission was probably denied. Check System Settings → Privacy & Security → Microphone / Screen & System Audio Recording. It prints a progress line every second, so you can see when a stream stops advancing. To isolate a problem, use `--no-mic` or `--no-system` to record one stream only, or `--no-vp` to turn off mic voice processing (echo cancellation).
 
+To record from a mic other than the system default, run `osx/pick-mic.sh`. It lists the input devices, lets you pick one by number, and saves the choice to `~/Library/Application Support/com.bitofant.pa/config.json`, where later runs pick it up. Choose `0` to go back to the system default. If the saved mic is unplugged, `pa` falls back to the system default.
+
 Launch it with `open` as shown. If you run the binary directly from a terminal, macOS attributes the permission prompts to the terminal app instead of PA.
