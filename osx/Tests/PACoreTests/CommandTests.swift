@@ -26,7 +26,18 @@ import Testing
         #expect(o.global)
     }
 
+    @Test func streamSwitches() throws {
+        var want = TestCaptureOptions()
+        want.mic = false
+        want.voiceProcessing = false
+        #expect(try parseCommand(["test-capture", "--no-mic", "--no-vp"]) == .testCapture(want))
+        want = TestCaptureOptions()
+        want.system = false
+        #expect(try parseCommand(["test-capture", "--no-system"]) == .testCapture(want))
+    }
+
     @Test func rejectsBadInput() {
+        #expect(throws: UsageError.self) { try parseCommand(["test-capture", "--no-mic", "--no-system"]) }
         #expect(throws: UsageError.self) { try parseCommand(["test-capture", "--seconds", "0"]) }
         #expect(throws: UsageError.self) { try parseCommand(["test-capture", "--seconds"]) }
         #expect(throws: UsageError.self) { try parseCommand(["test-capture", "--global", "--app", "x"]) }

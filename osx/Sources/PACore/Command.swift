@@ -9,6 +9,10 @@ public struct TestCaptureOptions: Equatable, Sendable {
     /// Bundle-id prefixes whose audio to tap; ignored when `global`.
     public var apps: [String] = ["us.zoom"]
     public var global = false
+    /// Per-stream switches: isolate which stream/setting breaks capture.
+    public var mic = true
+    public var system = true
+    public var voiceProcessing = true
     /// nil = ~/pa-test-capture (cwd is / under `open`; ~/Desktop would add a TCC prompt).
     public var outDir: String? = nil
 
@@ -23,8 +27,9 @@ public struct UsageError: Error, Equatable, CustomStringConvertible {
 public let usage = """
     usage:
       pa test-capture [--seconds N] [--app BUNDLE_PREFIX]... [--global] [--out DIR]
+                      [--no-mic] [--no-system] [--no-vp]
           Record system audio (process tap) + mic to two WAVs. Default: 30s, --app us.zoom,
-          --out ~/pa-test-capture.
+          --out ~/pa-test-capture. --no-vp = mic without voice processing (echo cancellation).
     """
 
 /// `args` excludes argv[0].
@@ -50,12 +55,19 @@ public func parseCommand(_ args: [String]) throws(UsageError) -> Command {
             case "--out":
                 guard let v = it.next(), !v.isEmpty else { throw UsageError("--out needs a directory") }
                 o.outDir = v
+            case "--no-mic":
+                o.mic = false
+            case "--no-system":
+                o.system = false
+            case "--no-vp":
+                o.voiceProcessing = false
             default:
                 throw UsageError("unknown flag \(flag)")
             }
         }
         if !explicitApps.isEmpty { o.apps = explicitApps }
         if o.global && !explicitApps.isEmpty { throw UsageError("--global and --app are mutually exclusive") }
+        if !o.mic && !o.system { throw UsageError("--no-mic and --no-system leave nothing to record") }
         return .testCapture(o)
     default:
         throw UsageError("unknown command \(sub)")

@@ -1,3 +1,4 @@
+import AVFoundation
 import CoreAudio
 import Foundation
 import PACore
@@ -62,10 +63,22 @@ func listAudioProcesses() throws -> [AudioProcess] {
     }
 }
 
-func defaultOutputDeviceUID() throws -> String {
-    let dev = try readScalar(systemObject, kAudioHardwarePropertyDefaultSystemOutputDevice, initial: AudioObjectID(0))
+/// `sel` = kAudioHardwarePropertyDefault{Output,SystemOutput,Input}Device.
+func defaultDevice(_ sel: AudioObjectPropertySelector) throws -> AudioObjectID {
+    try readScalar(systemObject, sel, initial: AudioObjectID(0))
+}
+
+func deviceUID(_ dev: AudioObjectID) throws -> String {
     guard let uid = try readString(dev, kAudioDevicePropertyDeviceUID) else {
-        throw CoreAudioError(what: "default output device UID", status: -1)
+        throw CoreAudioError(what: "UID of device \(dev)", status: -1)
     }
     return uid
+}
+
+func deviceName(_ dev: AudioObjectID) -> String {
+    (try? readString(dev, kAudioObjectPropertyName)) ?? "device \(dev)"
+}
+
+func describe(_ f: AVAudioFormat) -> String {
+    "\(Int(f.sampleRate)) Hz, \(f.channelCount) ch, \(f.isInterleaved ? "interleaved" : "non-interleaved")"
 }

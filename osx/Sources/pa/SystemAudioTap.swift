@@ -23,7 +23,12 @@ final class SystemAudioTap {
         desc.muteBehavior = .unmuted
         try check(AudioHardwareCreateProcessTap(desc, &tapID), "AudioHardwareCreateProcessTap")
 
-        let outputUID = try defaultOutputDeviceUID()
+        // Default output (where meeting audio plays), not the system/alert-sound device.
+        let output = try defaultDevice(kAudioHardwarePropertyDefaultOutputDevice)
+        let outputUID = try deviceUID(output)
+        let alerts = try defaultDevice(kAudioHardwarePropertyDefaultSystemOutputDevice)
+        print("system: aggregate clocked by \(deviceName(output))"
+            + (alerts == output ? "" : " (alert sounds go to \(deviceName(alerts)))"))
         let aggregate: [String: Any] = [
             kAudioAggregateDeviceNameKey: "pa-tap",
             kAudioAggregateDeviceUIDKey: UUID().uuidString,
@@ -43,6 +48,7 @@ final class SystemAudioTap {
         guard let format = AVAudioFormat(streamDescription: &asbd) else {
             throw CoreAudioError(what: "tap format unsupported by AVAudioFormat", status: -1)
         }
+        print("system: tap format \(describe(format))")
         let w = try WavWriter(url: url, format: format)
         writer = w
 
