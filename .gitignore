@@ -1,0 +1,11 @@
+node_modules/
+dist/
+data/
+config.json
+plan.md
+research.md
+temp.md
+pr-description.md
+osx/.build/
+*.app/
+.DS_Store
