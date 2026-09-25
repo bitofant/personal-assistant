@@ -10,6 +10,10 @@ struct PA {
                 print(usage)
             case .testCapture(let options):
                 try await testCapture(options)
+            case .mics:
+                try listMics()
+            case .setMic(let uid):
+                try setMic(uid)
             }
         } catch let e as UsageError {
             eprint("\(e)\n\n\(usage)")

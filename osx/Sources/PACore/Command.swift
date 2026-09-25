@@ -2,6 +2,9 @@
 public enum Command: Equatable, Sendable {
     case help
     case testCapture(TestCaptureOptions)
+    case mics
+    /// nil = back to system default input.
+    case setMic(String?)
 }
 
 public struct TestCaptureOptions: Equatable, Sendable {
@@ -30,6 +33,10 @@ public let usage = """
                       [--no-mic] [--no-system] [--no-vp]
           Record system audio (process tap) + mic to two WAVs. Default: 30s, --app us.zoom,
           --out ~/pa-test-capture. --no-vp = mic without voice processing (echo cancellation).
+      pa mics
+          List input devices: UID<TAB>name<TAB>flags (default,selected). Interactive: osx/pick-mic.sh.
+      pa set-mic (UID | --default)
+          Persist the mic to record from (config.json in ~/Library/Application Support/com.bitofant.pa).
     """
 
 /// `args` excludes argv[0].
@@ -69,6 +76,12 @@ public func parseCommand(_ args: [String]) throws(UsageError) -> Command {
         if o.global && !explicitApps.isEmpty { throw UsageError("--global and --app are mutually exclusive") }
         if !o.mic && !o.system { throw UsageError("--no-mic and --no-system leave nothing to record") }
         return .testCapture(o)
+    case "mics":
+        guard args.count == 1 else { throw UsageError("mics takes no arguments") }
+        return .mics
+    case "set-mic":
+        guard args.count == 2, !args[1].isEmpty else { throw UsageError("set-mic needs a device UID or --default") }
+        return .setMic(args[1] == "--default" ? nil : args[1])
     default:
         throw UsageError("unknown command \(sub)")
     }

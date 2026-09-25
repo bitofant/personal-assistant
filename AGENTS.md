@@ -64,7 +64,7 @@ The repo has a few components:
 - `npm run dev` (tsx watch + Vite middleware), `npm run build` (frontend → `dist/web`), `npm start`.
 - `npm test`, `npm run test:watch`, `npm run test:e2e`, `npm run typecheck`.
 - `./config-gen.sh`, `./install-service.sh`, `./start.sh [dev]`, `./stop.sh`, `./restart.sh`, `./rebuild.sh`.
-- osx: `swift build` / `swift test` in `osx/`; `osx/build.sh [identity]` → signed `osx/build/PA.app`; `osx/install.sh` (LaunchAgent, planned).
+- osx: `swift build` / `swift test` in `osx/`; `osx/build.sh [identity]` → signed `osx/build/PA.app`; `osx/install.sh` (LaunchAgent, planned); `osx/pick-mic.sh` (numbered mic picker).
 - Run bundle: `open -W --stdout $(tty) --stderr $(tty) osx/build/PA.app --args test-capture`.
 
 ## Working practices
@@ -152,7 +152,10 @@ The repo has a few components:
   - **Sign with a stable self-signed code-signing cert** (Keychain Access → Certificate Assistant). Ad-hoc signing changes identity every build → TCC re-prompts/stale grants. No paid Apple dev account.
   - No hardened runtime (would need audio-input entitlement; no notarization anyway).
   - ⚠️ TCC attributes to the *responsible* process: bare `PA.app/Contents/MacOS/pa` from Terminal → grants go to Terminal. Launch via `open`/launchd. (Expected; confirm in spike.)
-- **CLI subcommands:** `pa pair <server> <account>` (prompts, shows pairing code), `pa status`, `pa run` (daemon mode), `pa test-capture` (spike, below).
+- **CLI subcommands:** `pa pair <server> <account>` (prompts, shows pairing code), `pa status`, `pa run` (daemon mode), `pa test-capture` (spike, below), `pa mics` / `pa set-mic (UID|--default)` (built).
+- **Mic selection (built, device switch not verified live):** persisted as Core Audio device **UID** (stable; object ids aren't) in app-support `config.json` `micDeviceUID`; nil/unplugged → system default.
+  - `pa mics` = TSV `uid\tname\tflags` (pure `formatMicLine`), parsed by bash-3.2 `osx/pick-mic.sh`. Bare binary OK: enumeration needs no TCC.
+  - Applied via `kAudioOutputUnitProperty_CurrentDevice` on inputNode's unit before + after enabling VP; device read back and printed (ground truth). Unverified whether VP honors it.
 - **Autostart:** LaunchAgent `~/Library/LaunchAgents/<bundle id>.plist` (`RunAtLoad`, `KeepAlive`) running `PA.app/Contents/MacOS/pa run`; installed by `osx/install.sh`. **First run manually** so TCC prompts appear.
 - **Calendar:** EventKit (reads whatever accounts macOS Calendar syncs: Exchange/Google/iCloud). Config picks which calendars are "work". No direct Graph/Google API.
 - **Audio capture — two streams, kept separate** (no BlackHole/virtual driver):
@@ -161,7 +164,8 @@ The repo has a few components:
   - Tap scope: meeting-app processes (Zoom). Browser meetings: audio comes from browser helper processes → tap whole browser; global tap as fallback (picks up notification sounds/music).
   - Mic = local user (free speaker ID). ⚠️ On laptop speakers, mic also hears remotes → duplicate text attributed to me; AEC + dropping mic segments that duplicate system-stream text.
   - Status: **not verified live yet.** `pa test-capture [--seconds N] [--app PREFIX]... [--global] [--out DIR] [--no-mic] [--no-system] [--no-vp]`: tap + mic → two WAVs in `~/pa-test-capture/` (not ~/Desktop: extra TCC prompt) + per-second progress + peak/RMS + callback stats.
-  - First live run (Zoom settings dialog, test sound): tap got only 0.5s of 30s; VP mic = all zeros though permission granted. Suspect VP (reconfigures output device, ducks other audio). Mic now starts before tap, ducking min, `mainMixerNode` touched; bisect with `--no-vp`/`--no-mic`/`--no-system`. Unresolved.
+  - First live run (Zoom settings dialog, test sound): tap got only 0.5s of 30s; VP mic = all zeros though permission granted. Suspect VP (reconfigures output device, ducks other audio). Mic now starts before tap, ducking min; bisect with `--no-vp`/`--no-mic`/`--no-system`. Unresolved.
+  - VP mic format on MacBook Pro Microphone = 48 kHz, **5 ch** non-interleaved (verified live). ⚠️ Touching `engine.mainMixerNode` with VP on → `engine.start` fails -10875 (verified live); don't re-add.
   - Aggregate clocked by default **output** device (where meeting plays), not the system/alert-sound device.
   - Tap = `CATapDescription` (mixdown of process objects, `muteBehavior=.unmuted`, private) → private aggregate device (default output as main sub-device, tap auto-start) → IOProc block → `AVAudioFile`.
   - Targets by **bundle-id prefix with `.` boundary** over `kAudioHardwarePropertyProcessObjectList` (catches helpers, e.g. `com.google.Chrome.helper`).

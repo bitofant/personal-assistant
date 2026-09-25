@@ -23,8 +23,10 @@ let systemObject = AudioObjectID(kAudioObjectSystemObject)
 /// kAudioObjectUnknown's imported type varies by SDK; pin it.
 let unknownObject: AudioObjectID = 0
 
-func propAddress(_ selector: AudioObjectPropertySelector) -> AudioObjectPropertyAddress {
-    AudioObjectPropertyAddress(mSelector: selector, mScope: kAudioObjectPropertyScopeGlobal, mElement: kAudioObjectPropertyElementMain)
+func propAddress(
+    _ selector: AudioObjectPropertySelector, scope: AudioObjectPropertyScope = kAudioObjectPropertyScopeGlobal
+) -> AudioObjectPropertyAddress {
+    AudioObjectPropertyAddress(mSelector: selector, mScope: scope, mElement: kAudioObjectPropertyElementMain)
 }
 
 func readScalar<T>(_ obj: AudioObjectID, _ sel: AudioObjectPropertySelector, initial: T) throws -> T {
@@ -77,6 +79,17 @@ func deviceUID(_ dev: AudioObjectID) throws -> String {
 
 func deviceName(_ dev: AudioObjectID) -> String {
     (try? readString(dev, kAudioObjectPropertyName)) ?? "device \(dev)"
+}
+
+/// Devices with ≥1 input stream (mics, interfaces, virtual inputs).
+func listInputDevices() throws -> [MicDevice] {
+    try readArray(systemObject, kAudioHardwarePropertyDevices, zero: AudioObjectID(0)).compactMap { id in
+        var addr = propAddress(kAudioDevicePropertyStreams, scope: kAudioObjectPropertyScopeInput)
+        var size: UInt32 = 0
+        guard AudioObjectGetPropertyDataSize(id, &addr, 0, nil, &size) == noErr, size > 0,
+              let uid = try? deviceUID(id) else { return nil }
+        return MicDevice(objectID: id, uid: uid, name: deviceName(id))
+    }
 }
 
 func describe(_ f: AVAudioFormat) -> String {
