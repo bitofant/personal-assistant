@@ -14,8 +14,8 @@ final class SystemAudioTap {
     /// `processes` = Core Audio process object ids; empty + `global` = everything except `excluding`.
     func start(processes: [AudioObjectID], global: Bool, excluding: [AudioObjectID], writingTo url: URL) throws {
         let desc = global
-            ? CATapDescription(stereoGlobalTapButExcludeProcesses: excluding.map { NSNumber(value: $0) })
-            : CATapDescription(stereoMixdownOfProcesses: processes.map { NSNumber(value: $0) })
+            ? CATapDescription(stereoGlobalTapButExcludeProcesses: excluding)
+            : CATapDescription(stereoMixdownOfProcesses: processes)
         desc.uuid = UUID()
         desc.name = "pa test-capture"
         desc.isPrivate = true
