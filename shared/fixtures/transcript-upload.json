@@ -1,0 +1,25 @@
+{
+  "id": "6F1C2B7E-3D4A-4E5F-9A8B-1C2D3E4F5A6B",
+  "startedAt": "2026-09-24T09:00:03+02:00",
+  "endedAt": "2026-09-24T09:31:40+02:00",
+  "meeting": {
+    "calendarName": "Work",
+    "eventId": "AAMkAGI2TG93AAA=",
+    "seriesId": "AAMkAGI2TG93SERIES=",
+    "title": "Alice / Bob 1:1",
+    "start": "2026-09-24T07:00:00Z",
+    "end": "2026-09-24T07:30:00Z",
+    "organizer": { "name": "Alice Example", "email": "Alice@Example.com" },
+    "attendees": [
+      { "name": "Alice Example", "email": "alice@example.com" },
+      { "name": "Bob Builder", "email": " BOB@example.com " }
+    ]
+  },
+  "segments": [
+    { "start": 0.0, "end": 4.2, "speaker": "Alice Example", "text": "Morning! How was the offsite?" },
+    { "start": 4.6, "end": 11.9, "speaker": "Speaker 2", "text": "Good, we mostly talked about the Q4 roadmap." },
+    { "start": 12.3, "end": 15.0, "speaker": null, "text": "Let's start with the hiring plan." }
+  ],
+  "asrModel": "parakeet-tdt-0.6b-v3",
+  "diarizationModel": "fluidaudio-diarizer-v1"
+}
