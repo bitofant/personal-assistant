@@ -69,7 +69,7 @@ The repo has a few components:
 
 ## Working practices
 - **AGENTS.md hygiene:** record settled decisions + their *why*; mark sections `(settled)` / `(planned, not built)`. Non-obvious fix → note the bug it prevents + "don't regress/simplify". Facts about external tools/APIs checked by running them → say "verified live"; don't trust docs alone.
-- **Git:** one branch + PR per change, squash-merged (`Title (#N)`), imperative titles. Never commit on the default branch directly. Commit/push only when asked.
+- **Git:** ⚠️ **never commit, create/switch branches, or push** — leave changes uncommitted on the current branch. agent-remote's auto-PR does branch (`joran/…`) + commit + push + PR. PRs are squash-merged (`Title (#N)`), imperative titles.
 - Scratch notes (`plan.md`, `research.md`, `temp.md`, `pr-description.md`) are gitignored — use them freely, never commit.
 - **Config:** everything in gitignored `config.json`; shape in `config.example.json`; `./config-gen.sh` = interactive generator. **No env vars, no `.env`.** Secrets live only in `config.json` (server) / Keychain (osx).
 - `data/` (SQLite, uploads) and `dist/` gitignored.
@@ -168,6 +168,7 @@ The repo has a few components:
   - Second live run (Zoom, QuadCast S mic, External Headphones): tap IOProc delivered **2 buffers/callback** for a 2 ch interleaved tap → `AVAudioPCMBuffer(bufferListNoCopy:)` failed every callback (verified live). Now copy the last matching buffer / interleave mono buffers; stats print buffer layout + per-buffer peak. Don't go back to assuming 1 buffer.
   - Creating the tap aggregate fires `AVAudioEngineConfigurationChange` on the VP mic engine → engine stops (verified live) → now restarted in the observer.
   - VP mic format on MacBook Pro Microphone = 48 kHz, **5 ch** non-interleaved (verified live). ⚠️ Touching `engine.mainMixerNode` with VP on → `engine.start` fails -10875 (verified live); don't re-add.
+  - Third live run (Zoom, QuadCast S, External Headphones): tap OK (-3 dBFS); VP mic still **all zeros** though callbacks flow (verified live) → VP-specific, not device-specific. Bisecting: pre-tap level, VP bypassed/muted flags, per-channel peaks. Unresolved.
   - Aggregate clocked by default **output** device (where meeting plays), not the system/alert-sound device.
   - Tap = `CATapDescription` (mixdown of process objects, `muteBehavior=.unmuted`, private) → private aggregate device (default output as main sub-device, tap auto-start) → IOProc block → `AVAudioFile`.
   - Targets by **bundle-id prefix with `.` boundary** over `kAudioHardwarePropertyProcessObjectList` (catches helpers, e.g. `com.google.Chrome.helper`).

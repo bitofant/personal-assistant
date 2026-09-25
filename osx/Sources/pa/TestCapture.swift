@@ -50,6 +50,12 @@ func testCapture(_ o: TestCaptureOptions) async throws {
     // aggregate already clocked by it (suspected: tap got 0.5s of 30s in first live run).
     if o.mic {
         try mic.start(voiceProcessing: o.voiceProcessing, deviceUID: try loadAgentConfig().micDeviceUID, writingTo: micURL)
+        // Pre-roll: silent already, or only after the tap aggregate's config change + engine restart?
+        if o.system, let w = mic.writer {
+            print("mic: 1s pre-roll before tap (talk) …")
+            try await Task.sleep(for: .seconds(1))
+            print("[pre-tap] " + formatLevel(label: "mic   ", meter: w.meter, seconds: w.seconds))
+        }
     }
     if o.system {
         try system.start(processes: targets.map(\.objectID), global: o.global, excluding: own, writingTo: systemURL)

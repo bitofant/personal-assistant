@@ -46,6 +46,14 @@ final class MicCapture: @unchecked Sendable {
         }
         engine.prepare()
         try engine.start()
+        printVPState()
+    }
+
+    /// Muted/bypassed VP = silent buffers without error; suspected cause of all-zero mic.
+    private func printVPState() {
+        let i = engine.inputNode
+        guard i.isVoiceProcessingEnabled else { return }
+        print("mic: VP bypassed=\(i.isVoiceProcessingBypassed), inputMuted=\(i.isVoiceProcessingInputMuted), AGC=\(i.isVoiceProcessingAGCEnabled)")
     }
 
     private func configurationChanged() {
@@ -59,6 +67,7 @@ final class MicCapture: @unchecked Sendable {
         do {
             try engine.start()
             print("mic: engine restarted")
+            printVPState()
         } catch {
             print("mic: ⚠️ engine restart failed: \(error)")
         }
