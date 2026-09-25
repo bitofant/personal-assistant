@@ -160,7 +160,9 @@ The repo has a few components:
   - System audio: Core Audio **process taps** (`AudioHardwareCreateProcessTap`, macOS 14.2+). Permission = "System Audio Recording Only" (not Screen Recording); no public API to pre-check — prompt fires on first tap.
   - Tap scope: meeting-app processes (Zoom). Browser meetings: audio comes from browser helper processes → tap whole browser; global tap as fallback (picks up notification sounds/music).
   - Mic = local user (free speaker ID). ⚠️ On laptop speakers, mic also hears remotes → duplicate text attributed to me; AEC + dropping mic segments that duplicate system-stream text.
-  - Status: **not verified live yet.** `pa test-capture [--seconds N] [--app PREFIX]... [--global] [--out DIR]`: tap + mic → two WAVs in `~/pa-test-capture/` (not ~/Desktop: extra TCC prompt) + peak/RMS summary.
+  - Status: **not verified live yet.** `pa test-capture [--seconds N] [--app PREFIX]... [--global] [--out DIR] [--no-mic] [--no-system] [--no-vp]`: tap + mic → two WAVs in `~/pa-test-capture/` (not ~/Desktop: extra TCC prompt) + per-second progress + peak/RMS + callback stats.
+  - First live run (Zoom settings dialog, test sound): tap got only 0.5s of 30s; VP mic = all zeros though permission granted. Suspect VP (reconfigures output device, ducks other audio). Mic now starts before tap, ducking min, `mainMixerNode` touched; bisect with `--no-vp`/`--no-mic`/`--no-system`. Unresolved.
+  - Aggregate clocked by default **output** device (where meeting plays), not the system/alert-sound device.
   - Tap = `CATapDescription` (mixdown of process objects, `muteBehavior=.unmuted`, private) → private aggregate device (default output as main sub-device, tap auto-start) → IOProc block → `AVAudioFile`.
   - Targets by **bundle-id prefix with `.` boundary** over `kAudioHardwarePropertyProcessObjectList` (catches helpers, e.g. `com.google.Chrome.helper`).
   - Denied system-audio permission = **silent buffers, no error** → summary flags all-zero streams. Don't drop this check.

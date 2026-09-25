@@ -62,6 +62,6 @@ swift test             # pure unit tests
 open -W --stdout $(tty) --stderr $(tty) build/PA.app --args test-capture --seconds 30
 ```
 
-`test-capture` records Zoom audio through a Core Audio process tap, plus your mic, into two WAVs in `~/pa-test-capture/`. It then prints peak/RMS levels for each stream. Use `--app <bundle-id-prefix>` to tap another app (e.g. `com.google.Chrome`), or `--global` to tap all system audio. If a stream is flagged "all zeros", the permission was probably denied. Check System Settings → Privacy & Security → Microphone / Screen & System Audio Recording.
+`test-capture` records Zoom audio through a Core Audio process tap, plus your mic, into two WAVs in `~/pa-test-capture/`. It then prints peak/RMS levels for each stream. Use `--app <bundle-id-prefix>` to tap another app (e.g. `com.google.Chrome`), or `--global` to tap all system audio. If a stream is flagged "all zeros", the permission was probably denied. Check System Settings → Privacy & Security → Microphone / Screen & System Audio Recording. It prints a progress line every second, so you can see when a stream stops advancing. To isolate a problem, use `--no-mic` or `--no-system` to record one stream only, or `--no-vp` to turn off mic voice processing (echo cancellation).
 
 Launch it with `open` as shown. If you run the binary directly from a terminal, macOS attributes the permission prompts to the terminal app instead of PA.
