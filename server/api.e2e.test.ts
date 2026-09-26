@@ -7,10 +7,13 @@ import type { AddressInfo } from "node:net";
 import type {
   DeviceListResponse,
   DeviceMeResponse,
+  LlmStatusResponse,
   PairResponse,
   SignupResponse,
+  SummarizeResponse,
   TranscriptDetail,
   TranscriptListResponse,
+  TranscriptSummaryResponse,
 } from "../shared/api.js";
 import { createApp, type App } from "./app.js";
 import { parseConfig, type Config } from "./config.js";
@@ -31,7 +34,7 @@ beforeAll(async () => {
 });
 afterAll(async () => {
   await new Promise((r) => server.close(r));
-  app.close();
+  await app.close();
   rmSync(dir, { recursive: true, force: true });
 });
 
@@ -42,6 +45,14 @@ const json = (body: unknown, headers: Record<string, string> = {}) => ({
 const post = (path: string, body: unknown, headers?: Record<string, string>) =>
   fetch(base + path, { method: "POST", ...json(body, headers) });
 const cookieOf = (res: Response) => res.headers.get("set-cookie")!.split(";")[0];
+
+async function waitFor(cond: () => Promise<boolean>, ms = 5000): Promise<void> {
+  const end = Date.now() + ms;
+  while (!(await cond())) {
+    if (Date.now() > end) throw new Error("waitFor timed out");
+    await new Promise((r) => setTimeout(r, 20));
+  }
+}
 
 const DEVICE_TOKEN = "d".repeat(43);
 const bearer = { authorization: `Bearer ${DEVICE_TOKEN}` };
@@ -119,6 +130,77 @@ describe("API flow", () => {
     expect(detail.segments).toHaveLength(3);
     expect(detail.deviceId).toBe(deviceId);
     expect((await fetch(`${base}/api/transcripts/nope`, { headers: { cookie } })).status).toBe(404);
+  });
+
+  it("LLM status: session required; unrouted tasks report off, not an error", async () => {
+    expect((await fetch(`${base}/api/llm/status`)).status).toBe(401);
+    const res = await fetch(`${base}/api/llm/status`, { headers: { cookie } });
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as LlmStatusResponse;
+    expect(body.tasks.map((t) => t.task)).toEqual(["summary", "search", "embed"]);
+    for (const t of body.tasks) expect(t).toMatchObject({ ok: false, provider: null, model: null, modelListed: null });
+  });
+
+  it("upload queues a summary; LLM not configured = job waits (queued), transcript still stored", async () => {
+    const id = upload.id.toLowerCase();
+    const detail = (await (await fetch(`${base}/api/transcripts/${id}`, { headers: { cookie } })).json()) as TranscriptDetail;
+    expect(detail.summary).toBeNull();
+    expect(detail.summaryJob).toMatchObject({ status: "queued" });
+    // Runner kicked on upload: by now it has tried once and recorded why it's waiting.
+    await waitFor(async () => {
+      const d = (await (await fetch(`${base}/api/transcripts/${id}`, { headers: { cookie } })).json()) as TranscriptDetail;
+      return /not configured/.test(d.summaryJob?.lastError ?? "");
+    });
+  });
+
+  it("re-summarize with a (fake) LLM routed → summary appears on the transcript", async () => {
+    const llm = createServer((req, res) => {
+      res.setHeader("content-type", "application/json");
+      res.end(JSON.stringify({ model: "fake", choices: [{ message: { content: "## Summary\n- hiring plan" }, finish_reason: "stop" }] }));
+    });
+    await new Promise<void>((r) => llm.listen(0, "127.0.0.1", r));
+    try {
+      const port = (llm.address() as AddressInfo).port;
+      config = parseConfig({
+        users: ["alice"],
+        llm: { providers: [{ id: "fake", baseUrl: `http://127.0.0.1:${port}/v1` }], tasks: { summary: { provider: "fake", model: "fake" } } },
+      });
+      const id = upload.id.toLowerCase();
+      const rs = await post(`/api/transcripts/${id}/summarize`, {}, { cookie });
+      expect(rs.status).toBe(202);
+      expect(((await rs.json()) as SummarizeResponse).summaryJob).toMatchObject({ status: "queued", attempts: 0, lastError: null });
+      expect((await fetch(`${base}/api/transcripts/${id}/summarize`, { method: "POST", headers: { cookie } })).status).toBe(415); // CSRF guard
+      expect((await post(`/api/transcripts/00000000-0000-4000-8000-000000000000/summarize`, {}, { cookie })).status).toBe(404);
+      let d!: TranscriptDetail;
+      await waitFor(async () => {
+        d = (await (await fetch(`${base}/api/transcripts/${id}`, { headers: { cookie } })).json()) as TranscriptDetail;
+        return d.summary !== null;
+      });
+      expect(d.summary).toMatchObject({ text: "## Summary\n- hiring plan", meetingType: "1on1", instructionsSource: "builtin:1on1", provider: "fake", model: "fake", stale: false });
+      expect(d.summaryJob).toMatchObject({ status: "done", lastError: null, nextAttemptAt: null });
+      // Poll endpoint = same summary fields, without the segments.
+      const polled = (await (await fetch(`${base}/api/transcripts/${id.toUpperCase()}/summary`, { headers: { cookie } })).json()) as TranscriptSummaryResponse;
+      expect(polled).toEqual({ summary: d.summary, summaryJob: d.summaryJob });
+      expect((await fetch(`${base}/api/transcripts/00000000-0000-4000-8000-000000000000/summary`, { headers: { cookie } })).status).toBe(404);
+      expect((await fetch(`${base}/api/transcripts/${id}/summary`)).status).toBe(401);
+
+      // Identical re-upload: nothing re-queued, summary stays fresh.
+      expect((await post("/api/device/transcripts", upload, bearer)).status).toBe(200);
+      d = (await (await fetch(`${base}/api/transcripts/${id}`, { headers: { cookie } })).json()) as TranscriptDetail;
+      expect(d.summaryJob?.status).toBe("done");
+      expect(d.summary?.stale).toBe(false);
+
+      // Changed re-upload: stale until re-summarized.
+      const r = await post("/api/device/transcripts", { ...upload, segments: upload.segments.slice(1) }, bearer);
+      expect(r.status).toBe(200);
+      await waitFor(async () => {
+        d = (await (await fetch(`${base}/api/transcripts/${id}`, { headers: { cookie } })).json()) as TranscriptDetail;
+        return d.summaryJob?.status === "done" && d.summary?.stale === false;
+      });
+    } finally {
+      config = parseConfig({ users: ["alice"] });
+      await new Promise((r) => llm.close(r));
+    }
   });
 
   it("disabling the user in config cuts off both web session and device", async () => {

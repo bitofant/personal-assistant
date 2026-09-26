@@ -1,5 +1,6 @@
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
+import type { LlmTaskName } from "../shared/api.js";
 
 // All config lives in gitignored config.json; no env vars by design.
 
@@ -16,8 +17,9 @@ export interface LlmRoute {
   model: string;
 }
 
-export const LLM_TASKS = ["summary", "search", "embed"] as const;
-export type LlmTask = (typeof LLM_TASKS)[number];
+// Wire type is the source of truth; `satisfies` keeps this list from drifting.
+export const LLM_TASKS = ["summary", "search", "embed"] as const satisfies readonly LlmTaskName[];
+export type LlmTask = LlmTaskName;
 
 export interface Config {
   server: { port: number };

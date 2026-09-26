@@ -153,4 +153,68 @@ export interface TranscriptDetail extends TranscriptUpload {
   deviceName: string | null;
   receivedAt: string;
   updatedAt: string;
+  /** Latest stored summary; may be stale while a re-summarize is queued. */
+  summary: TranscriptSummary | null;
+  /** null = never queued (e.g. uploaded before summaries existed). */
+  summaryJob: JobState | null;
+}
+
+// ---- Summaries ----
+
+/** Rule-based: 2 attendees = 1on1; calendar event = meeting; no event = adhoc. */
+export type MeetingType = "1on1" | "meeting" | "adhoc";
+
+export interface TranscriptSummary {
+  /** Markdown. */
+  text: string;
+  meetingType: MeetingType;
+  /** Which instructions produced it, e.g. "builtin:1on1"; most specific wins. */
+  instructionsSource: string;
+  provider: string;
+  model: string;
+  createdAt: string;
+  /** Transcript was re-uploaded after this summary was made. */
+  stale: boolean;
+}
+
+export type JobStatus = "queued" | "running" | "done" | "failed";
+
+export interface JobState {
+  status: JobStatus;
+  attempts: number;
+  /** Last failure (outage or error); null once done. */
+  lastError: string | null;
+  /** When a queued job is due; null unless queued. */
+  nextAttemptAt: string | null;
+}
+
+/** GET /api/transcripts/:id/summary (web): cheap poll target while a summary is generating. */
+export interface TranscriptSummaryResponse {
+  summary: TranscriptSummary | null;
+  summaryJob: JobState | null;
+}
+
+/** POST /api/transcripts/:id/summarize (web, body `{}`) → 202. Re-runs even if a summary exists. */
+export interface SummarizeResponse {
+  summaryJob: JobState;
+}
+
+// ---- LLM ----
+
+export type LlmTaskName = "summary" | "search" | "embed";
+
+/** One routed task's reachability; unrouted task = ok false, provider/model null. */
+export interface LlmTaskStatus {
+  task: LlmTaskName;
+  ok: boolean;
+  provider: string | null;
+  model: string | null;
+  /** Model id present in provider `/models`; null = provider unreachable. */
+  modelListed: boolean | null;
+  error: string | null;
+}
+
+/** GET /api/llm/status (web session). */
+export interface LlmStatusResponse {
+  tasks: LlmTaskStatus[];
 }

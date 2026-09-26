@@ -60,9 +60,9 @@ describe("transcript storage", () => {
   it("upsert is idempotent on id; keeps raw verbatim and received_at", () => {
     const d = db();
     const t = parseTranscriptUpload(fixture());
-    expect(upsertTranscript(d, "dev1", t, FIXTURE_RAW, 1000)).toEqual({ id: t.id, created: true });
+    expect(upsertTranscript(d, "dev1", t, FIXTURE_RAW, 1000)).toEqual({ id: t.id, created: true, changed: true });
     const edited = { ...t, segments: t.segments.slice(0, 1) };
-    expect(upsertTranscript(d, "dev1", edited, "{}", 2000)).toEqual({ id: t.id, created: false });
+    expect(upsertTranscript(d, "dev1", edited, "{}", 2000)).toEqual({ id: t.id, created: false, changed: true });
 
     const names = new Map([["dev1", "MacBook"]]);
     const got = getTranscript(d, t.id.toUpperCase(), names)!;
@@ -71,6 +71,15 @@ describe("transcript storage", () => {
     expect(got.updatedAt).toBe(new Date(2000).toISOString());
     expect(got.deviceName).toBe("MacBook");
     expect((d.prepare("SELECT raw FROM transcripts").get() as { raw: string }).raw).toBe("{}");
+  });
+
+  it("identical re-upload (device retry) = unchanged; updated_at kept so summaries don't go stale", () => {
+    const d = db();
+    const t = parseTranscriptUpload(fixture());
+    upsertTranscript(d, "dev1", t, FIXTURE_RAW, 1000);
+    // Different raw whitespace, same normalized content.
+    expect(upsertTranscript(d, "dev1", parseTranscriptUpload(fixture()), FIXTURE_RAW + " ", 2000)).toEqual({ id: t.id, created: false, changed: false });
+    expect(getTranscript(d, t.id, new Map())!.updatedAt).toBe(new Date(1000).toISOString());
   });
 
   it("list: newest first, ad-hoc attendee count unknown (null, not 0), revoked device name null", () => {

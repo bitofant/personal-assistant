@@ -39,7 +39,7 @@ The repo has a few components:
 
 ## Project state
 - Server scaffold (settled): config loading/validation, `GET /api/health`, static/Vite serving, systemd scripts.
-- Server (built): SQLite store, web auth, device pairing + approval, transcript ingest/list/detail, minimal web UI.
+- Server (built): SQLite store, web auth, device pairing + approval, transcript ingest/list/detail, minimal web UI, LLM client + job queue, summaries (+ web view with job status).
 - osx: `pa test-capture` spike runs on the Mac; Zoom tap + mic (no VP) record (verified live).
 - Everything else below = planned, not built.
 - Default port **4200** (4000/4100 taken on the dev box by other services).
@@ -53,8 +53,8 @@ The repo has a few components:
 2. **osx: transcription spike** — FluidAudio Parakeet v3 + diarization on spike WAVs → `[{start,end,speaker,text}]`; check speed/accuracy. Behind `Transcriber` protocol.
 3. **osx: `pa pair` / `pa status`** — Keychain token, app-support `config.json`, poll `/api/device/me`; Swift `Codable` mirrors of `shared/api.ts` + fixture decode tests.
 4. **osx: `pa upload <wav-dir>`** — manual transcribe + upload → first real end-to-end transcript on server.
-5. **server: LLM client + job queue** — `server/llm.ts` (chat/embeddings, `/models` health), SQLite jobs w/ backoff, fail-safe (queued, never lost).
-6. **server: summaries** — instruction resolution (series > type > default), 1on1 rule + LLM classify fallback, store model/instructions, re-summarize; web UI for instructions + summary view.
+5. ~~**server: LLM client + job queue**~~ — done (see Server design → LLM / Background jobs).
+6. **server: summaries** — built: summarize job on upload, 1on1 rule, built-in per-type instructions, stored model/instructions, stale flag, re-summarize API, web summary panel. Left: custom instructions (series > type > default; table + API + web UI), LLM classify fallback, long-transcript chunking (map-reduce) if context overflows.
 7. **server: search v1** — FTS5 over segments/titles/attendees; web search page. Then v2: chunk+embed w/ `sqlite-vec`, hybrid merge, optional RAG answer.
 8. **osx: daemon (`pa run`)** — EventKit work calendars, meeting detection, auto capture → transcribe → persistent upload queue, raw-audio retention; `osx/install.sh` LaunchAgent; `os.Logger` + log file.
 9. **Speaker naming** — label speakers in web UI, per-user voice embeddings, match vs attendees; LLM name proposals never overwrite user labels.
@@ -88,7 +88,8 @@ The repo has a few components:
 - **Optional features fail safe:** LLM/embedding outage degrades features, never blocks ingest or loses data.
 - **Agents never restart/redeploy the running service** (`restart.sh`, `systemctl`); ask the user.
 - ⚠️ **Never `pkill -f "tsx server/index.ts"`**: matches sibling services on this box (agent-remote, git-observer) and the agent's own shell. Kill by PID (`$!`) only.
-- Live smoke test without touching repo `config.json`/`data/`: scratch dir with symlinks to repo + own `config.json` on a spare port.
+- Live smoke test without touching repo `config.json`/`data/`: scratch dir with symlinks to repo + own `config.json` on a spare port. Stop it via `lsof -ti:<port> -sTCP:LISTEN` (the `$!` PID is only the tsx wrapper).
+- Browser checks: no chromium-cli/system Chrome on dev box; Playwright installed in `/tmp/pw` (outside repo, not a dependency), `chromium.launch({args:["--no-sandbox"]})` works (verified live).
 
 ## Server tech (borrowed from `../agent-remote`)
 - TypeScript everywhere, ESM (`"type":"module"`).
@@ -99,7 +100,7 @@ The repo has a few components:
 - Tests: Vitest (see Working practices).
 - Deploy: systemd **user** service; `install-service.sh`, `start.sh`/`stop.sh`/`restart.sh`/`rebuild.sh`. `Restart=always`, `StartLimitIntervalSec=0`. Rebuild stages to `dist/web.next` then atomic swap.
 - Server resilience: `uncaughtException`/`unhandledRejection` log-and-continue; static serving try/catch → 503.
-- Markdown rendering: `marked`, raw HTML escaped.
+- Markdown rendering (built): `shared/markdown.ts` `renderMarkdown` = the only Markdown→HTML path. LLM output is untrusted (speech can prompt-inject): raw HTML escaped, links only http(s)/mailto (`target=_blank rel=noopener`), images → alt text (no remote loads). Don't loosen.
 
 - **Config (settled):** `server/config.ts` `parseConfig` (pure, tested) validates + normalizes (usernames lowercased/trimmed, baseUrl trailing `/` stripped, empty apiKey → `null`); `loadConfig` = thin file wrapper. Unrouted `llm.tasks.X` = feature off, not an error. Task → unknown provider = startup error.
 - **Static serving:** `resolveStaticPath` must stay `startsWith(root + sep)` (bare `startsWith(root)` lets `dist/web.prev` through); traversal → SPA fallback, never a file outside root.
@@ -129,13 +130,31 @@ The repo has a few components:
   - `parseTranscriptUpload` normalizes: lowercase uuid + emails, timestamps → UTC ISO (zone required), blank → null, all-null people dropped. Fixture: `shared/fixtures/transcript-upload.json`.
   - Stored: `raw` (body verbatim) + `data` (normalized JSON) + index columns. Ad-hoc `attendee_count` = null, not 0.
   - Derived data (summary, chunks, embeddings) regenerable from raw.
+  - `updated_at` = content last changed: identical re-upload (device retry) keeps it and returns `changed:false` → no re-summarize, summary not stale. Don't make it bump on no-op uploads.
 - **Formatting:** `shared/format.ts` (`formatDateTime`, `formatDuration`, `formatOffset`, `formatValue`; missing → `—`) used by UI and logs.
-- **LLM:** `server/llm.ts`, OpenAI-compatible only (`/v1/chat/completions`, `/v1/embeddings`).
-  - `config.json` `llm.providers[]` `{id, baseUrl, apiKey?, models[]}`; default = local vLLM/llama.cpp (free).
-  - Per-task routing `llm.tasks {summary, search, embed} → provider/model`; paid providers opt-in per task.
-  - Best-effort/fail-safe: health via `/models`, unavailable → job stays queued, never lost.
-- **Background jobs:** SQLite-backed queue (summarize, chunk+embed), retried with backoff; survives restart.
-- **Summaries:** custom instructions resolved most-specific-wins: recurring series (`seriesId`) > meeting type (e.g. `1on1`) > default. Meeting type by rule first (2 attendees → 1on1), LLM classify fallback. Store which instructions/model produced each summary; re-summarize on demand.
+- **LLM (built):** `server/llm.ts`, OpenAI-compatible only (`/chat/completions`, `/embeddings`, `/models`); `createLlm({getConfig})` reads config per call (live reload).
+  - `config.json` `llm.providers[]` `{id, baseUrl, apiKey?, models[]}`; default = local vLLM/llama.cpp (free). Per-task routing `llm.tasks {summary, search, embed}`; paid providers opt-in per task.
+  - Pure parsers (`parseChatResponse`, `parseEmbeddingsResponse`, `errorMessage`, …) unit-tested with fake fetch; `llm.e2e.test.ts` = fake provider down→503→up (never skips) + live local LLM (config.json route, else probes `localhost:8000/v1`; self-skips).
+  - `LlmError.retryable`: network/timeout/408/409/429/5xx/non-JSON reply/**unrouted task** = true (outage → job waits); other 4xx / malformed reply = false.
+  - Strips leading `<think>…</think>` (reasoning models). Embeddings batched (64), reordered by `index`.
+  - Health: `GET /api/llm/status` (session) → per task `{ok, provider, model, modelListed, error}`; model missing from `/models` = not ok (common misconfig).
+  - vLLM reply/error shapes verified live (`{error:{message}}`, FastAPI `{detail}`); vLLM on dev box has no embedding model → embed live test skips.
+- **Background jobs (built):** `server/jobs.ts` `JobQueue` (SQLite) + `JobRunner` (one job at a time: one local LLM). Started in `createApp`; handlers registered in `app.ts` `defaultJobHandlers`.
+  - **Disabled users skipped:** `claimNext`/`nextRunAt` filter by `config.users` (read per claim) → no tokens spent; jobs stay queued untouched, resume when re-enabled (≤60s idle poll). `nextRunAt` must filter too, else an overdue disabled job makes the runner spin.
+  - Table in **app.db** (not per-user DB) so one worker scans all users; payload = refs only (ids), never content. `user_id` FK cascade.
+  - Dedupe on `(user_id, type, key)`: re-enqueue revives row (new payload, counters reset, `generation+1`). Settle only `WHERE generation = claimed AND status='running'` → re-upload mid-run re-runs, never lost. Don't drop the guard.
+  - Retries: exponential backoff (30s→1h cap, no jitter). `isRetryable` duck-typed (`err.retryable === true`) so queue never imports LLM code. Outages never count toward `maxFailures` (5) → never `failed`; `failed` row kept, re-enqueue revives.
+  - Crash: `recover()` at start requeues `running`. Shutdown: `app.close()` is async, aborts handler signal, `release()`s job (attempt not counted) before DB close.
+- **Summaries (built, partial):** `server/summaries.ts`; job `summarize`, key = transcript id, payload null.
+  - Enqueued on upload if content `changed` or never queued (backfill); `POST /api/transcripts/:id/summarize` (body `{}`, JSON content-type = CSRF guard) forces re-run → 202 `{summaryJob}`.
+  - `GET /api/transcripts/:id` adds `summary` (`stale` = transcript changed since) + `summaryJob` (`JobState`). `GET /api/transcripts/:id/summary` = same two fields without segments (UI poll target; don't poll the full detail).
+  - Web `SummaryPanel`: pure `web/summaryState.ts` `summaryStatusView(job, hasSummary)` → message/tone/poll/button (unit-tested); polls 2s while queued/running, 15s while waiting out a backoff (queued + `lastError`), stops on done/failed. Button: Summarize / Re-summarize / Retry, disabled in progress.
+  - UI states verified live in headless Chromium (done, generating, LLM down → waiting → auto-recovered ~30s); `failed` + never-queued only unit-tested.
+  - Meeting type by rule: no event = `adhoc`, 2 attendees = `1on1`, else `meeting`. Instructions: built-in per type (`builtin:<type>`); planned custom resolution series > type > default, LLM classify fallback.
+  - Prompt: system = common rules (transcript language, Markdown, no invention, ASR caveats) + instructions; user = metadata + `[m:ss] Speaker: text` (same-speaker runs merged). No `max_tokens`; `finish_reason=length` / empty = non-retryable error.
+  - Stored in per-user `summaries` (one row per transcript): text, type, instructions source + text, provider/model, token usage (null if unknown), `transcript_updated_at`.
+  - Handler: missing transcript = done (no-op); LLM outage/unrouted `summary` task = retryable → job waits.
+  - Live on dev box (gemma-4-31B via vLLM): fixture summary correct, ~0.6s (verified live).
 - **Search:** hybrid — SQLite FTS5 (keywords/names) + `sqlite-vec` (embeddings of ~1-min transcript chunks) → merge/rerank → optional LLM answer citing chunks (RAG).
 - **Wire contract:** `shared/api.ts` is source of truth; Swift `Codable` mirrors it. JSON fixtures in `shared/fixtures/` decoded by tests on both sides to catch drift.
 
