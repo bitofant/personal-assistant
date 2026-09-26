@@ -15,7 +15,29 @@ describe("parseConfig", () => {
     const raw = JSON.parse(readFileSync("config.example.json", "utf8"));
     const c = parseConfig(raw);
     expect(c.llm.providers.length).toBeGreaterThan(0);
-    expect(c.llm.tasks.summary?.provider).toBe(c.llm.providers[0].id);
+    expect(c.llm.tasks.summary?.[0].provider).toBe(c.llm.providers[0].id);
+  });
+
+  it("task = one route or a list (first = default); normalized to a list", () => {
+    const providers = [{ id: "local", baseUrl: "http://l" }, { id: "paid", baseUrl: "https://p" }];
+    const c = parseConfig({
+      llm: {
+        providers,
+        tasks: { search: { provider: "local", model: "m" }, summary: [{ provider: "local", model: "m" }, { provider: "paid", model: "big" }] },
+      },
+    });
+    expect(c.llm.tasks.search).toEqual([{ provider: "local", model: "m" }]);
+    expect(c.llm.tasks.summary).toEqual([{ provider: "local", model: "m" }, { provider: "paid", model: "big" }]);
+    const bad = () =>
+      parseConfig({
+        llm: {
+          providers,
+          tasks: { summary: [{ provider: "local", model: "m" }, { provider: "local", model: "m" }, { provider: "x", model: "m" }], search: [] },
+        },
+      });
+    expect(bad).toThrow(/summary\[1\] duplicated/);
+    expect(bad).toThrow(/summary\[2\].provider "x"/);
+    expect(bad).toThrow(/search must not be empty/);
   });
 
   it("normalizes usernames, base URLs and empty api keys", () => {

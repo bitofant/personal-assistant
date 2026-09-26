@@ -7,8 +7,10 @@ import type { AddressInfo } from "node:net";
 import type {
   DeviceListResponse,
   DeviceMeResponse,
+  InstructionsResponse,
   LlmStatusResponse,
   PairResponse,
+  SettingsResponse,
   SignupResponse,
   SummarizeResponse,
   TranscriptDetail,
@@ -197,6 +199,105 @@ describe("API flow", () => {
         d = (await (await fetch(`${base}/api/transcripts/${id}`, { headers: { cookie } })).json()) as TranscriptDetail;
         return d.summaryJob?.status === "done" && d.summary?.stale === false;
       });
+    } finally {
+      config = parseConfig({ users: ["alice"] });
+      await new Promise((r) => llm.close(r));
+    }
+  });
+
+  it("custom instructions CRUD: validation, CSRF, series list", async () => {
+    const put = (path: string, body: unknown, headers: Record<string, string> = { cookie }) =>
+      fetch(`${base}/api/instructions${path}`, { method: "PUT", ...json(body, headers) });
+    expect((await fetch(`${base}/api/instructions`)).status).toBe(401);
+    let r = (await (await fetch(`${base}/api/instructions`, { headers: { cookie } })).json()) as InstructionsResponse;
+    expect(r).toEqual({ custom: [], series: [{ seriesId: "AAMkAGI2TG93SERIES=", title: "Alice / Bob 1:1", count: 1, lastStartedAt: "2026-09-24T07:00:03.000Z" }] });
+
+    expect((await put("/default", { text: " Be brief. " })).status).toBe(200);
+    const typeRes = await put("/type/1on1", { text: "1on1 custom" });
+    expect(await typeRes.json()).toMatchObject({ scope: "type", key: "1on1", text: "1on1 custom" });
+    const series = encodeURIComponent("AAMkAGI2TG93SERIES=");
+    expect((await put(`/series/${series}`, { text: "SERIES-TEXT" })).status).toBe(200);
+    expect((await put("/type/party", { text: "x" })).status).toBe(400);
+    expect((await put("/default", { text: "  " })).status).toBe(400);
+    expect((await put("/default", { text: "x" }, {})).status).toBe(401);
+    expect((await fetch(`${base}/api/instructions/default`, { method: "PUT", headers: { cookie }, body: '{"text":"x"}' })).status).toBe(415);
+    expect((await put("/nope/x", { text: "x" })).status).toBe(404);
+
+    r = (await (await fetch(`${base}/api/instructions`, { headers: { cookie } })).json()) as InstructionsResponse;
+    expect(r.custom.map((c) => [c.scope, c.key, c.text])).toEqual([
+      ["default", "", "Be brief."],
+      ["series", "AAMkAGI2TG93SERIES=", "SERIES-TEXT"],
+      ["type", "1on1", "1on1 custom"],
+    ]);
+    expect((await fetch(`${base}/api/instructions/type/1on1`, { method: "DELETE", headers: { cookie } })).status).toBe(204);
+    expect((await fetch(`${base}/api/instructions/type/1on1`, { method: "DELETE", headers: { cookie } })).status).toBe(204);
+    r = (await (await fetch(`${base}/api/instructions`, { headers: { cookie } })).json()) as InstructionsResponse;
+    expect(r.custom).toHaveLength(2);
+  });
+
+  it("summary model choice: settings + per-run pick; series instructions used", async () => {
+    const models: string[] = [];
+    const llm = createServer((req, res) => {
+      let body = "";
+      req.on("data", (c) => (body += c));
+      req.on("end", () => {
+        const model = (JSON.parse(body) as { model: string }).model;
+        models.push(model);
+        res.setHeader("content-type", "application/json");
+        res.end(JSON.stringify({ model, choices: [{ message: { content: `## S by ${model}` }, finish_reason: "stop" }] }));
+      });
+    });
+    await new Promise<void>((r) => llm.listen(0, "127.0.0.1", r));
+    try {
+      const port = (llm.address() as AddressInfo).port;
+      config = parseConfig({
+        users: ["alice"],
+        llm: {
+          providers: [
+            { id: "local", baseUrl: `http://127.0.0.1:${port}/v1` },
+            { id: "paid", baseUrl: `http://127.0.0.1:${port}/v1` },
+          ],
+          tasks: { summary: [{ provider: "local", model: "small" }, { provider: "paid", model: "big" }] },
+        },
+      });
+      const putSettings = (body: unknown) => fetch(`${base}/api/settings`, { method: "PUT", ...json(body, { cookie }) });
+      let s = (await (await fetch(`${base}/api/settings`, { headers: { cookie } })).json()) as SettingsResponse;
+      expect(s).toEqual({
+        summaryLlm: null,
+        summaryLlmChoices: [
+          { provider: "local", model: "small", isDefault: true },
+          { provider: "paid", model: "big", isDefault: false },
+        ],
+      });
+      expect((await putSettings({ summaryLlm: { provider: "paid", model: "nope" } })).status).toBe(400);
+      expect((await putSettings({})).status).toBe(400);
+      const ok = await putSettings({ summaryLlm: { provider: "paid", model: "big" } });
+      expect(((await ok.json()) as SettingsResponse).summaryLlm).toEqual({ provider: "paid", model: "big" });
+
+      const id = upload.id.toLowerCase();
+      const summarizeAndWait = async (body: unknown) => {
+        const before = models.length;
+        const res = await post(`/api/transcripts/${id}/summarize`, body, { cookie });
+        expect(res.status).toBe(202);
+        let d!: TranscriptDetail;
+        await waitFor(async () => {
+          d = (await (await fetch(`${base}/api/transcripts/${id}`, { headers: { cookie } })).json()) as TranscriptDetail;
+          return models.length > before && d.summaryJob?.status === "done";
+        });
+        return d;
+      };
+      // User setting applies; series instructions (set in the previous test) win.
+      let d = await summarizeAndWait({});
+      expect(d.summary).toMatchObject({ text: "## S by big", provider: "paid", model: "big", meetingType: "1on1", meetingTypeSource: "rule", instructionsSource: "series:AAMkAGI2TG93SERIES=" });
+      // Per-run pick overrides the setting.
+      d = await summarizeAndWait({ llm: { provider: "local", model: "small" } });
+      expect(d.summary).toMatchObject({ provider: "local", model: "small" });
+      expect((await post(`/api/transcripts/${id}/summarize`, { llm: { provider: "x", model: "y" } }, { cookie })).status).toBe(400);
+
+      // Pick removed from config → reported (and used) as default.
+      config = parseConfig({ ...config, llm: { providers: config.llm.providers, tasks: { summary: [{ provider: "local", model: "small" }] } } });
+      s = (await (await fetch(`${base}/api/settings`, { headers: { cookie } })).json()) as SettingsResponse;
+      expect(s.summaryLlm).toBeNull();
     } finally {
       config = parseConfig({ users: ["alice"] });
       await new Promise((r) => llm.close(r));

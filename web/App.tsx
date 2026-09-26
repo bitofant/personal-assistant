@@ -3,6 +3,7 @@ import type {
   DeviceInfo,
   DeviceListResponse,
   MeResponse,
+  SettingsResponse,
   SignupResponse,
   SummarizeResponse,
   TranscriptDetail,
@@ -11,9 +12,12 @@ import type {
   TranscriptSummaryResponse,
 } from "../shared/api.js";
 import { formatDateTime, formatDuration, formatOffset, formatValue } from "../shared/format.js";
+import { describeInstructionsSource, meetingTypeLabel } from "../shared/instructions.js";
 import { renderMarkdown } from "../shared/markdown.js";
 import { api, ApiError } from "./api.js";
+import { SummarySettings } from "./Settings.js";
 import { summaryStatusView, type SummaryTone } from "./summaryState.js";
+import { ErrorLine, muted, routeKey, routeLabel } from "./ui.js";
 
 function useHash(): string {
   const [hash, setHash] = useState(location.hash || "#/");
@@ -42,11 +46,12 @@ export function App() {
     <Shell>
       <nav style={{ display: "flex", gap: "1rem", alignItems: "baseline" }}>
         <a href="#/">Transcripts</a>
+        <a href="#/settings">Summary settings</a>
         <a href="#/devices">Devices</a>
         <span style={{ marginLeft: "auto" }}>{me.username}</span>
         <button onClick={logout}>Log out</button>
       </nav>
-      {hash === "#/devices" ? <Devices /> : detail ? <Transcript id={detail[1]} /> : <Transcripts />}
+      {hash === "#/devices" ? <Devices /> : hash === "#/settings" ? <SummarySettings /> : detail ? <Transcript id={detail[1]} /> : <Transcripts />}
     </Shell>
   );
 }
@@ -58,10 +63,6 @@ function Shell({ children }: { children: ReactNode }) {
       {children}
     </main>
   );
-}
-
-function ErrorLine({ error }: { error: string | null }) {
-  return error ? <p style={{ color: "crimson" }}>{error}</p> : null;
 }
 
 function Login({ onLogin }: { onLogin: (me: MeResponse) => void }) {
@@ -174,6 +175,14 @@ function SummaryPanel({ transcriptId, initial }: { transcriptId: string; initial
   const view = summaryStatusView(summaryJob, summary !== null);
   const html = useMemo(() => (summary ? renderMarkdown(summary.text) : ""), [summary]);
   const path = `/transcripts/${encodeURIComponent(transcriptId)}`;
+  const [settings, setSettings] = useState<SettingsResponse | null>(null);
+  const [pick, setPick] = useState<string | null>(null);
+  useEffect(() => {
+    api<SettingsResponse>("/settings").then(setSettings, () => setSettings(null));
+  }, []);
+  const choices = settings?.summaryLlmChoices ?? [];
+  const current = settings && (settings.summaryLlm ?? choices.find((c) => c.isDefault) ?? null);
+  const picked = choices.find((c) => routeKey(c) === (pick ?? (current && routeKey(current))));
 
   // Poll the cheap summary endpoint only while the job is still going.
   useEffect(() => {
@@ -189,7 +198,7 @@ function SummaryPanel({ transcriptId, initial }: { transcriptId: string; initial
   }, [state, view.pollMs, path]);
 
   const summarize = () =>
-    api<SummarizeResponse>(`${path}/summarize`, { body: {} }).then(
+    api<SummarizeResponse>(`${path}/summarize`, { body: picked ? { llm: { provider: picked.provider, model: picked.model } } : {} }).then(
       (r) => (setState((s) => ({ ...s, summaryJob: r.summaryJob })), setError(null)),
       (e: Error) => setError(e.message),
     );
@@ -198,7 +207,17 @@ function SummaryPanel({ transcriptId, initial }: { transcriptId: string; initial
     <section style={{ border: "1px solid #ddd", borderRadius: 6, padding: "0.5rem 1rem", margin: "1rem 0" }}>
       <div style={{ display: "flex", alignItems: "baseline", gap: "1rem" }}>
         <h3 style={{ margin: "0.5rem 0" }}>Summary</h3>
-        <button style={{ marginLeft: "auto" }} disabled={view.inProgress} onClick={() => void summarize()}>
+        <span style={{ marginLeft: "auto" }} />
+        {choices.length > 1 && picked && (
+          <select aria-label="Model" value={routeKey(picked)} onChange={(e) => setPick(e.target.value)} disabled={view.inProgress}>
+            {choices.map((c) => (
+              <option key={routeKey(c)} value={routeKey(c)}>
+                {routeLabel(c)}
+              </option>
+            ))}
+          </select>
+        )}
+        <button disabled={view.inProgress} onClick={() => void summarize()}>
           {view.action}
         </button>
       </div>
@@ -215,8 +234,11 @@ function SummaryPanel({ transcriptId, initial }: { transcriptId: string; initial
             <p style={{ color: TONE_COLOR.warn }}>The transcript changed after this summary was made.</p>
           )}
           <div className="summary" style={{ opacity: view.inProgress ? 0.6 : 1 }} dangerouslySetInnerHTML={{ __html: html }} />
-          <p style={{ color: "#888", fontSize: "0.8rem" }}>
-            {summary.meetingType} · {summary.provider}/{summary.model} · instructions {summary.instructionsSource} · {formatDateTime(summary.createdAt)}
+          <p style={muted}>
+            {meetingTypeLabel(summary.meetingType)}
+            {summary.meetingTypeSource === "llm" && " (detected by LLM)"}
+            {summary.meetingTypeSource === "fallback" && " (type not detected)"} · {summary.provider}/{summary.model} · {describeInstructionsSource(summary.instructionsSource)} (
+            <a href="#/settings">edit</a>) · {formatDateTime(summary.createdAt)}
           </p>
         </>
       )}

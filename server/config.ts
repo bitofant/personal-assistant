@@ -27,8 +27,8 @@ export interface Config {
   users: string[];
   llm: {
     providers: LlmProvider[];
-    /** Unrouted task = feature disabled (fail safe), not an error. */
-    tasks: Partial<Record<LlmTask, LlmRoute>>;
+    /** Non-empty; first = default, others = user-selectable alternatives. Unrouted task = feature disabled (fail safe), not an error. */
+    tasks: Partial<Record<LlmTask, LlmRoute[]>>;
   };
 }
 
@@ -78,14 +78,23 @@ export function parseConfig(raw: unknown): Config {
   for (const key of Object.keys(rawTasks)) {
     const at = `llm.tasks.${key}`;
     if (!(LLM_TASKS as readonly string[]).includes(key)) { errors.push(`${at}: unknown task`); continue; }
-    const r = rawTasks[key];
-    if (!isRecord(r) || typeof r.provider !== "string" || typeof r.model !== "string") {
-      errors.push(`${at} must be {provider, model}`);
-      continue;
+    // Single route or list (first = default); normalized to a list.
+    const list = Array.isArray(rawTasks[key]) ? (rawTasks[key] as unknown[]) : [rawTasks[key]];
+    if (!list.length) { errors.push(`${at} must not be empty`); continue; }
+    const routes: LlmRoute[] = [];
+    for (const [i, r] of list.entries()) {
+      const rat = Array.isArray(rawTasks[key]) ? `${at}[${i}]` : at;
+      if (!isRecord(r) || typeof r.provider !== "string" || typeof r.model !== "string" || !r.model) {
+        errors.push(`${rat} must be {provider, model}`);
+        continue;
+      }
+      if (!providers.some((p) => p.id === r.provider))
+        errors.push(`${rat}.provider "${r.provider}" not in llm.providers`);
+      if (routes.some((q) => q.provider === r.provider && q.model === r.model))
+        errors.push(`${rat} duplicated`);
+      routes.push({ provider: r.provider, model: r.model });
     }
-    if (!providers.some((p) => p.id === r.provider))
-      errors.push(`${at}.provider "${r.provider}" not in llm.providers`);
-    tasks[key as LlmTask] = { provider: r.provider, model: r.model };
+    tasks[key as LlmTask] = routes;
   }
 
   if (errors.length) throw new Error(`Invalid config.json:\n  - ${errors.join("\n  - ")}`);

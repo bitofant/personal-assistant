@@ -11,6 +11,7 @@ import {
   parseEmbeddingsResponse,
   parseModelsResponse,
   resolveRoute,
+  routeChoices,
   stripThinking,
 } from "./llm.js";
 
@@ -36,6 +37,23 @@ describe("resolveRoute", () => {
     const r = resolveRoute(config, "summary");
     expect(r.provider.baseUrl).toBe("http://llm:8000/v1");
     expect(r.model).toBe("m");
+  });
+
+  it("preferred route only if configured for the task, else default", () => {
+    const c = parseConfig({
+      llm: {
+        providers: [{ id: "local", baseUrl: "http://llm/v1" }, { id: "paid", baseUrl: "https://paid/v1" }],
+        tasks: { summary: [{ provider: "local", model: "m" }, { provider: "paid", model: "big" }] },
+      },
+    });
+    expect(resolveRoute(c, "summary", { provider: "paid", model: "big" })).toMatchObject({ provider: { id: "paid" }, model: "big" });
+    expect(resolveRoute(c, "summary", { provider: "paid", model: "m" })).toMatchObject({ provider: { id: "local" }, model: "m" });
+    expect(resolveRoute(c, "summary", null).model).toBe("m");
+    expect(routeChoices(c, "summary")).toEqual([
+      { provider: "local", model: "m", isDefault: true },
+      { provider: "paid", model: "big", isDefault: false },
+    ]);
+    expect(routeChoices(c, "search")).toEqual([]);
   });
 
   it("unrouted task = retryable (feature off, jobs wait)", () => {

@@ -161,14 +161,19 @@ export interface TranscriptDetail extends TranscriptUpload {
 
 // ---- Summaries ----
 
-/** Rule-based: 2 attendees = 1on1; calendar event = meeting; no event = adhoc. */
-export type MeetingType = "1on1" | "meeting" | "adhoc";
+/** Descriptions + built-in instructions: `shared/instructions.ts`. */
+export type MeetingType = "1on1" | "standup" | "interview" | "external" | "meeting" | "adhoc";
+
+/** rule = metadata/title; llm = classified by the LLM; fallback = LLM gave no usable answer → "meeting". */
+export type MeetingTypeSource = "rule" | "llm" | "fallback";
 
 export interface TranscriptSummary {
   /** Markdown. */
   text: string;
   meetingType: MeetingType;
-  /** Which instructions produced it, e.g. "builtin:1on1"; most specific wins. */
+  /** null = summary made before this was recorded. */
+  meetingTypeSource: MeetingTypeSource | null;
+  /** Which instructions produced it: "series:<id>" | "type:<type>" | "default" | "builtin:<type>". */
   instructionsSource: string;
   provider: string;
   model: string;
@@ -194,9 +199,71 @@ export interface TranscriptSummaryResponse {
   summaryJob: JobState | null;
 }
 
-/** POST /api/transcripts/:id/summarize (web, body `{}`) → 202. Re-runs even if a summary exists. */
+/** POST /api/transcripts/:id/summarize (web) → 202. Re-runs even if a summary exists. */
+export interface SummarizeRequest {
+  /** One-off model for this run; must be one of `summaryLlmChoices`. Omitted/null = user setting. */
+  llm?: LlmRouteRef | null;
+}
+
 export interface SummarizeResponse {
   summaryJob: JobState;
+}
+
+// ---- Custom summary instructions ----
+
+/** default: key "" · type: key = MeetingType · series: key = MeetingMeta.seriesId. */
+export type InstructionScope = "default" | "type" | "series";
+
+export interface CustomInstruction {
+  scope: InstructionScope;
+  key: string;
+  text: string;
+  updatedAt: string;
+}
+
+/** Recurring series seen in the user's transcripts (offered for per-series instructions). */
+export interface SeriesInfo {
+  seriesId: string;
+  /** Title of the latest occurrence. */
+  title: string | null;
+  count: number;
+  lastStartedAt: string;
+}
+
+/** GET /api/instructions */
+export interface InstructionsResponse {
+  custom: CustomInstruction[];
+  series: SeriesInfo[];
+}
+
+/** PUT /api/instructions/default | /type/:type | /series/:seriesId → 200 CustomInstruction. DELETE same paths → 204. */
+export interface PutInstructionRequest {
+  text: string;
+}
+
+// ---- User settings ----
+
+export interface LlmRouteRef {
+  provider: string;
+  model: string;
+}
+
+export interface LlmChoice extends LlmRouteRef {
+  /** Server default (first route in config `llm.tasks.summary`). */
+  isDefault: boolean;
+}
+
+/** GET /api/settings, PUT /api/settings → 200. */
+export interface SettingsResponse {
+  /** Model for summaries; null = server default (also when the saved pick was removed from config). */
+  summaryLlm: LlmRouteRef | null;
+  /** Admin-configured options; empty = summaries not configured. */
+  summaryLlmChoices: LlmChoice[];
+}
+
+/** PUT /api/settings */
+export interface SettingsRequest {
+  summaryLlm: LlmRouteRef | null;
 }
 
 // ---- LLM ----

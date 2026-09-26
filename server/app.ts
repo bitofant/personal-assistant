@@ -2,8 +2,10 @@ import type { IncomingMessage, ServerResponse } from "node:http";
 import type {
   DeviceListResponse,
   HealthResponse,
+  InstructionsResponse,
   LlmStatusResponse,
   MeResponse,
+  SettingsResponse,
   SignupResponse,
   SummarizeResponse,
   TranscriptDetail,
@@ -16,9 +18,11 @@ import { LLM_TASKS, type Config } from "./config.js";
 import { Devices } from "./devices.js";
 import { Store } from "./db.js";
 import { jobState, JobQueue, JobRunner, type JobHandler, type RunnerOptions } from "./jobs.js";
-import { createLlm, type Llm } from "./llm.js";
-import { getSummary, SUMMARIZE_JOB, summarizeHandler } from "./summaries.js";
-import { bearerToken, HttpError, readJson, sendError, sendJson, sendNoContent } from "./http.js";
+import { deleteInstruction, listInstructions, listSeries, parseInstructionTarget, parseInstructionText, putInstruction } from "./instructions.js";
+import { createLlm, routeChoices, type Llm } from "./llm.js";
+import { effectiveChoice, getSummaryLlm, parseRouteChoice, setSummaryLlm } from "./settings.js";
+import { getSummary, SUMMARIZE_JOB, summarizeHandler, type SummarizePayload } from "./summaries.js";
+import { bearerToken, HttpError, isRecord, readJson, sendError, sendJson, sendNoContent } from "./http.js";
 import { getTranscript, transcriptExists, listTranscripts, MAX_TRANSCRIPT_BYTES, parseTranscriptUpload, upsertTranscript } from "./transcripts.js";
 
 export interface AppOptions {
@@ -155,10 +159,11 @@ export function createApp(opts: AppOptions): App {
   });
   route("POST", "/api/transcripts/:id/summarize", async ({ req, res, params }) => {
     const user = auth.requireUser(req);
-    await readJson(req); // content-type check = CSRF guard
+    const { value } = await readJson(req); // content-type check = CSRF guard
     const id = params[0].toLowerCase();
     if (!transcriptExists(store.user(user.id), id)) throw new HttpError(404, "No such transcript.");
-    sendJson(res, { summaryJob: jobState(enqueueSummary(user.id, id)) } satisfies SummarizeResponse, 202);
+    const llmPick = parseRouteChoice(isRecord(value) ? value.llm : null, routeChoices(opts.getConfig(), "summary"));
+    sendJson(res, { summaryJob: jobState(enqueueSummary(user.id, id, { llm: llmPick })) } satisfies SummarizeResponse, 202);
   });
 
   function summaryOf(userId: number, transcriptId: string): TranscriptSummaryResponse {
@@ -166,11 +171,46 @@ export function createApp(opts: AppOptions): App {
     return { summary: getSummary(store.user(userId), transcriptId), summaryJob: job && jobState(job) };
   }
 
-  function enqueueSummary(userId: number, transcriptId: string) {
-    const job = jobs.enqueue(userId, SUMMARIZE_JOB, transcriptId);
+  function enqueueSummary(userId: number, transcriptId: string, payload: SummarizePayload | null = null) {
+    const job = jobs.enqueue(userId, SUMMARIZE_JOB, transcriptId, payload);
     runner.kick();
     return job;
   }
+
+  // ---- custom summary instructions ----
+  route("GET", "/api/instructions", ({ req, res }) => {
+    const db = store.user(auth.requireUser(req).id);
+    sendJson(res, { custom: listInstructions(db), series: listSeries(db) } satisfies InstructionsResponse);
+  });
+  // /default, /type/:type, /series/:seriesId (URL-encoded)
+  for (const path of ["/api/instructions/(default)", "/api/instructions/(type|series)/:key"]) {
+    route("PUT", path, async ({ req, res, params }) => {
+      const user = auth.requireUser(req);
+      const { scope, key } = parseInstructionTarget(params[0], params[1]);
+      const text = parseInstructionText((await readJson(req)).value);
+      sendJson(res, putInstruction(store.user(user.id), scope, key, text, now()));
+    });
+    route("DELETE", path, ({ req, res, params }) => {
+      const user = auth.requireUser(req);
+      const { scope, key } = parseInstructionTarget(params[0], params[1]);
+      deleteInstruction(store.user(user.id), scope, key);
+      sendNoContent(res);
+    });
+  }
+
+  // ---- user settings ----
+  const settingsOf = (userId: number): SettingsResponse => {
+    const choices = routeChoices(opts.getConfig(), "summary");
+    return { summaryLlm: effectiveChoice(getSummaryLlm(store.user(userId)), choices), summaryLlmChoices: choices };
+  };
+  route("GET", "/api/settings", ({ req, res }) => sendJson(res, settingsOf(auth.requireUser(req).id)));
+  route("PUT", "/api/settings", async ({ req, res }) => {
+    const user = auth.requireUser(req);
+    const { value } = await readJson(req);
+    if (!isRecord(value) || !("summaryLlm" in value)) throw new HttpError(400, "summaryLlm required (null = server default).");
+    setSummaryLlm(store.user(user.id), parseRouteChoice(value.summaryLlm, routeChoices(opts.getConfig(), "summary")));
+    sendJson(res, settingsOf(user.id));
+  });
 
   // ---- LLM ----
   route("GET", "/api/llm/status", async ({ req, res }) => {
