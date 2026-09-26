@@ -167,6 +167,10 @@ export const USER_MIGRATIONS = [
   END;
   ${indexTranscriptSql("t", "FROM transcripts t")}
   `,
+  // Long transcripts: number of transcript parts summarized separately then combined (1 = one call; NULL = older row).
+  `
+  ALTER TABLE summaries ADD COLUMN parts INTEGER;
+  `,
 ] as const;
 
 // Part of shipped migration 4 (append-only): changing what's indexed = new migration that drops + rebuilds.

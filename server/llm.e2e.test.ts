@@ -234,6 +234,55 @@ describe.skipIf(!chatUp)("live local LLM: summarize job", () => {
   });
 });
 
+describe.skipIf(!chatUp)("live local LLM: long transcripts", () => {
+  it("prompt over the window → contextOverflow, not retryable (vLLM 400)", async () => {
+    const e = await liveLlm!.chat("summary", [{ role: "user", content: "word ".repeat(400_000) }], { maxTokens: 5 }).catch((err) => err);
+    expect(e).toMatchObject({ retryable: false, status: 400, contextOverflow: true });
+  });
+
+  it("~30 min meeting with a (forced) 4096-token window → parts → one summary", async () => {
+    const { parseTranscriptUpload } = await import("./transcripts.js");
+    const { summarizeTranscript } = await import("./summaries.js");
+    const { resolveInstructions } = await import("../shared/instructions.js");
+    const { readFileSync } = await import("node:fs");
+
+    const filler = [
+      "Okay, let me share my screen, one second.",
+      "Can you see it now? The dashboard with last week's numbers.",
+      "Yes, looks good. Traffic was mostly flat, nothing surprising there.",
+      "I think the dip on Tuesday was the deploy, we rolled it back quickly.",
+      "Right, and support tickets went down a bit after the fix.",
+      "Let's not spend too long on this, we have a lot to cover.",
+      "Agreed. Moving on then, unless someone has questions.",
+      "Just a quick note that the staging environment was flaky again.",
+    ];
+    // Facts placed early / middle / late → each lands in a different part.
+    const facts: Record<number, string> = {
+      20: "Decision: we migrate the billing service to Postgres, target date March 3rd.",
+      90: "We also agreed to hire two backend engineers this quarter.",
+      160: "Action item: Bob owns the security audit and will send the report by Friday.",
+    };
+    const segments = Array.from({ length: 180 }, (_, i) => ({
+      start: i * 10,
+      end: i * 10 + 8,
+      speaker: ["Alice Example", "Speaker 1", "Speaker 2"][i % 3],
+      text: facts[i] ?? filler[i % filler.length],
+    }));
+    const t = parseTranscriptUpload({ ...JSON.parse(readFileSync("shared/fixtures/transcript-upload-pa.json", "utf8")), endedAt: "2026-09-24T07:30:03Z", segments });
+    const route = live!.llm.tasks.summary![0];
+    const forced = { ...live!, llm: { ...live!.llm, tasks: { ...live!.llm.tasks, summary: [{ ...route, contextTokens: 4096 }] } } };
+    const llm = createLlm({ getConfig: () => forced });
+    const started = Date.now();
+    const r = await summarizeTranscript(t, resolveInstructions("adhoc", null, { series: null, type: null, default: null }), llm, { contextTokens: llm.contextTokens("summary") });
+    expect(r.parts).toBeGreaterThan(1);
+    expect(r.text.length).toBeGreaterThan(50);
+    console.log(`live summary in ${r.parts} parts (${r.model}, ${((Date.now() - started) / 1000).toFixed(1)}s, prompt tokens ${r.usage.promptTokens}):\n${r.text}`);
+    // Quality = soft: facts from every part should survive the combine step.
+    for (const [name, re] of [["Postgres migration", /postgres/i], ["two engineers", /two|2/i], ["security audit", /audit/i]] as const)
+      if (!re.test(r.text)) console.warn(`live long summary: lost "${name}"`);
+  });
+});
+
 describe.skipIf(!chatUp)("live local LLM: meeting classification", () => {
   it("ambiguous meetings get a parseable type from the LLM (not the fallback)", async () => {
     const { readFileSync } = await import("node:fs");

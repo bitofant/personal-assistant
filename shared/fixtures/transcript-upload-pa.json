@@ -1,0 +1,14 @@
+{
+  "asrModel": "parakeet-tdt-0.6b-v3",
+  "diarizationModel": "fluidaudio-offline-vbx-0.17.4",
+  "endedAt": "2026-09-24T07:02:03Z",
+  "id": "3f0e8a52-6c1d-4b8e-9d57-2a4c1e7b9f10",
+  "segments": [
+    { "end": 3.2, "speaker": "Alice Example", "start": 0.4, "text": "Morning! Can everyone hear me?" },
+    { "end": 5.9, "speaker": "Speaker 1", "start": 3.8, "text": "Yes, loud and clear." },
+    { "end": 12.6, "speaker": "Speaker 2", "start": 6.1, "text": "Same here. Let's go through the migration plan." },
+    { "end": 14, "speaker": "Alice Example", "start": 12.9, "text": "Sure." },
+    { "end": 19.5, "start": 14.2, "text": "Kan iemand de notulen bijhouden?" }
+  ],
+  "startedAt": "2026-09-24T07:00:03Z"
+}

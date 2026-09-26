@@ -51,11 +51,11 @@ The repo has a few components:
 ## Roadmap (next up, in order)
 - Order = riskiest unknowns first, then thinnest end-to-end slice (Mac audio → server transcript), then value-add. Tick off / reorder as done.
 1. **osx: finish `pa test-capture` on the Mac** — Zoom tap + mic done (verified live); still: global tap (now the only mode) live run, listen to WAVs. Record findings "verified live".
-2. **osx: transcription spike** — FluidAudio Parakeet v3 + diarization on spike WAVs → `[{start,end,speaker,text}]`; check speed/accuracy. Behind `Transcriber` protocol.
+2. **osx: transcription spike** — PACore merge logic built (see osx tech → Transcription). FluidAudio adapters + `pa transcribe` written but **never compiled** (Linux can't build `pa`). Left: on the Mac `swift build`, run `osx/bench-asr.sh` (speed/accuracy/languages), `pa transcribe --upload` = first real end-to-end transcript.
 3. **osx: `pa pair` / `pa status`** — built (see osx tech → Server client); left: first run on the Mac (Keychain, `Host` name, real server over https).
 4. **osx: `pa upload <wav-dir>`** — `pa upload <json>` done; left: transcribe WAVs (item 2) → `TranscriptUpload` → first real end-to-end transcript.
 5. ~~**server: LLM client + job queue**~~ — done (see Server design → LLM / Background jobs).
-6. **server: summaries** — built: summarize job, rule + LLM classify, built-in + custom instructions (series > type > default), per-user model pick, settings page. Left: long-transcript chunking (map-reduce) if context overflows; maybe "instructions changed" stale flag; reuse series' type instead of re-classifying.
+6. **server: summaries** — built: summarize job, rule + LLM classify, built-in + custom instructions (series > type > default), per-user model pick, settings page, long-transcript map-reduce. Left: maybe "instructions changed" stale flag; reuse series' type instead of re-classifying; resume part notes after an outage (now restarts from scratch).
 7. **server: search** — v1 done (FTS5 keyword + date/attendee filters, see Server design → Search). Next v2: chunk+embed w/ `sqlite-vec`, hybrid merge, optional RAG answer — blocked on real transcripts (to judge retrieval) + an embedding model on the dev box. Pagination skipped: >50 hits → refine with filters.
 8. **osx: daemon (`pa run`)** — EventKit work calendars, meeting detection, auto capture → transcribe → persistent upload queue, raw-audio retention; `osx/install.sh` LaunchAgent; `os.Logger` + log file.
 9. **Speaker naming** — label speakers in web UI, per-user voice embeddings, match vs attendees; LLM name proposals never overwrite user labels.
@@ -65,7 +65,7 @@ The repo has a few components:
 - `npm run dev` (tsx watch + Vite middleware), `npm run build` (frontend → `dist/web`), `npm start`.
 - `npm test`, `npm run test:watch`, `npm run test:e2e`, `npm run typecheck`.
 - `./config-gen.sh`, `./install-service.sh`, `./start.sh [dev]`, `./stop.sh`, `./restart.sh`, `./rebuild.sh`.
-- osx: `swift build` / `swift test` in `osx/`; `osx/test-linux.sh` = PACore tests on the Linux dev box (Docker `swift:6.1`, drops `pa` target); `osx/build.sh [identity]` → signed `osx/build/PA.app`; `osx/install.sh` (LaunchAgent, planned); `osx/pick-mic.sh` (numbered mic picker).
+- osx: `swift build` / `swift test` in `osx/`; `osx/test-linux.sh` = PACore tests on the Linux dev box (Docker `swift:6.1`; `pa` target is macOS-only in the manifest); `osx/build.sh [identity]` → signed `osx/build/PA.app`; `osx/install.sh` (LaunchAgent, planned); `osx/pick-mic.sh` (numbered mic picker); `osx/bench-asr.sh [dir] [stamp]` (Mac: pinned `fluidaudiocli` ASR + offline diarization on a capture → `bench-<stamp>/summary.txt`).
 - Run bundle: `open -W --stdout $(tty) --stderr $(tty) osx/build/PA.app --args test-capture`.
 
 ## Working practices
@@ -106,6 +106,7 @@ The repo has a few components:
 
 - **Config (settled):** `server/config.ts` `parseConfig` (pure, tested) validates + normalizes (usernames lowercased/trimmed, baseUrl trailing `/` stripped, empty apiKey → `null`); `loadConfig` = thin file wrapper. Unrouted `llm.tasks.X` = feature off, not an error. Task → unknown provider = startup error.
   - `llm.tasks.X` = route or list of routes → always normalized to non-empty `LlmRoute[]`; first = default, rest = user-selectable (summary). Duplicate route = error.
+  - Route `contextTokens` (optional, integer ≥4096, else null = unknown) = model window, used only for summary chunking.
 - **Static serving:** `resolveStaticPath` must stay `startsWith(root + sep)` (bare `startsWith(root)` lets `dist/web.prev` through); traversal → SPA fallback, never a file outside root.
 - **Toolchain versions:** TypeScript 7 (native `tsc`), Vite 8, React 19, Vitest 4, Node 25 on dev box.
 
@@ -139,6 +140,8 @@ The repo has a few components:
   - `config.json` `llm.providers[]` `{id, baseUrl, apiKey?, models[]}`; default = local vLLM/llama.cpp (free). Per-task routing `llm.tasks {summary, search, embed}`; paid providers opt-in per task.
   - Pure parsers (`parseChatResponse`, `parseEmbeddingsResponse`, `errorMessage`, …) unit-tested with fake fetch; `llm.e2e.test.ts` = fake provider down→503→up (never skips) + live local LLM (config.json route, else probes `localhost:8000/v1`; self-skips).
   - `LlmError.retryable`: network/timeout/408/409/429/5xx/non-JSON reply/**unrouted task** = true (outage → job waits); other 4xx / malformed reply = false.
+  - `LlmError.contextOverflow`: `isContextOverflow` (pure) = 413, or 400 + vLLM/OpenAI/llama.cpp/Anthropic "too long" wording; always non-retryable. vLLM reply verified live (instant 400, "maximum context length is 90000 tokens"). Only place that knows vendor wording.
+  - `llm.contextTokens(task, route)` = configured window of the route `chat` would use (null = unknown/unrouted).
   - Route choice: `chat(task, msgs, {route})`; `resolveRoute` honors `route` only if it's in `llm.tasks[task]` (else default) → users can't aim at arbitrary models/paid keys. Don't loosen. `routeChoices` = list for UI; health reports the default route.
   - Strips leading `<think>…</think>` (reasoning models). Embeddings batched (64), reordered by `index`.
   - Health: `GET /api/llm/status` (session) → per task `{ok, provider, model, modelListed, error}`; model missing from `/models` = not ok (common misconfig).
@@ -165,6 +168,12 @@ The repo has a few components:
   - Stored in per-user `summaries` (one row per transcript): text, type, instructions source + text, provider/model, token usage (null if unknown), `transcript_updated_at`.
   - Handler: missing transcript = done (no-op); LLM outage/unrouted `summary` task = retryable → job waits.
   - Live on dev box (gemma-4-31B via vLLM): fixture summary correct, ~0.6s (verified live).
+  - **Long transcripts (built):** `summarizeTranscript` = one call if it fits (or window unknown); else parts → notes per part (`buildPartPrompt`) → merge rounds of neighbour notes if they don't fit one call (`groupNotes`, ≤4 rounds) → `buildCombinePrompt` (same summary rules, fed notes). Instructions passed into every notes prompt so parts capture what the final format needs.
+    - Window unknown + overflow reply → assume 16384 (`FALLBACK_CONTEXT_TOKENS`); overflow in parts → halve and redo, down to 4096, then non-retryable error pointing at `contextTokens`. One wasted call per halving (verified in tests).
+    - Estimate = chars/3 (`CHARS_PER_TOKEN`): gemma tokenizer ~3.8 chars/token on Dutch prose, ~2.1 on JSON (verified live). Reply reserve = min(8192, window/4) (no `max_tokens` sent).
+    - `chunkSegments` splits between segments, oversize segment at word boundaries; order + every word kept.
+    - `summaries.parts` (user migration 5): 1 = one call, >1 = parts, NULL = older row; web shows "summarized in N parts". Usage summed over all calls (any unknown → null).
+    - Live (verified): 30-min synthetic meeting, forced 4096 window → 3 parts, 8.7s, facts from all 3 parts in the final summary.
 - **Search v1 (built):** `server/search.ts`; `GET /api/search?q=&limit=` (session) → `SearchResponse` (per transcript: list item, `metaMatch`, `segmentMatchCount`, ≤3 best segments w/ highlight `parts`).
   - Per-user DB migration 4: `search_rows` (1 row/segment + 1 meta row: title, attendee+organizer names/emails) + external-content FTS5 `search_fts` (`unicode61 remove_diacritics 2`). Synced by **triggers** from `transcripts.data` (+ backfill in migration) → no code path can forget to reindex. Changing what's indexed = new migration that rebuilds, never edit migration 4.
   - Speaker labels not indexed (diarization labels would match everything).
@@ -178,7 +187,7 @@ The repo has a few components:
   - Web filters: hash holds local days (`from`/`to` inclusive); `searchApiPath` converts to [local midnight, day-after-`to` midnight) instants — server never guesses the user's zone. Nav box keeps active filters.
   - Web: nav `SearchBox` → `#/search?q=`; `web/routes.ts` = only hash builder/parser (unit-tested); `#/t/<id>/s/<n>` scrolls to + highlights segment. Verified live in headless Chromium.
 - **Search v2 (planned, not built):** hybrid — FTS5 + `sqlite-vec` (embeddings of ~1-min chunks) → merge/rerank → optional LLM answer citing chunks (RAG).
-- **Wire contract:** `shared/api.ts` is source of truth; Swift `Codable` mirrors it (`osx/Sources/PACore/Wire.swift`). JSON fixtures in `shared/fixtures/` decoded by Swift `WireTests`; `api.e2e.test.ts` `expectFixtureShape` asserts real responses keep fixture keys + JSON types (mutation-checked both sides). New device-facing response → add fixture + both checks.
+- **Wire contract:** `shared/api.ts` is source of truth; Swift `Codable` mirrors it (`osx/Sources/PACore/Wire.swift`). JSON fixtures in `shared/fixtures/` decoded by Swift `WireTests`; `transcript-upload-pa.json` = byte-for-byte-semantic output of `pa transcribe`'s pure pipeline (Swift `PaUploadFixtureTests` builds it; server unit + `api.e2e` ingest/summarize/search it). nil keys are **omitted** (no `meeting`, no `speaker`), not null — server must keep treating missing = null; `api.e2e.test.ts` `expectFixtureShape` asserts real responses keep fixture keys + JSON types (mutation-checked both sides). New device-facing response → add fixture + both checks.
 
 ## osx tech (decisions)
 - **Headless — no UI.** Swift 6 CLI `pa`; runs as a background process. Swift because audio taps, EventKit, CoreML ASR are native-only.
@@ -193,7 +202,7 @@ The repo has a few components:
   - **Sign with a stable self-signed code-signing cert** (Keychain Access → Certificate Assistant). Ad-hoc signing changes identity every build → TCC re-prompts/stale grants. No paid Apple dev account.
   - No hardened runtime (would need audio-input entitlement; no notarization anyway).
   - ⚠️ TCC attributes to the *responsible* process: bare `PA.app/Contents/MacOS/pa` from Terminal → grants go to Terminal. Launch via `open`/launchd. (Expected; confirm in spike.)
-- **CLI subcommands:** `pa pair <server> <account> [--name D]`, `pa status`, `pa upload <json>`, `pa run` (daemon mode), `pa test-capture` (spike, below), `pa mics` / `pa set-mic (UID|--default)` (built).
+- **CLI subcommands:** `pa pair <server> <account> [--name D]`, `pa status`, `pa upload <json>`, `pa transcribe` (spike, see Transcription), `pa run` (daemon mode), `pa test-capture` (spike, below), `pa mics` / `pa set-mic (UID|--default)` (built).
 - **Mic selection (built, device switch not verified live):** persisted as Core Audio device **UID** (stable; object ids aren't) in app-support `config.json` `micDeviceUID`; nil/unplugged → system default.
   - `pa mics` = TSV `uid\tname\tflags` (pure `formatMicLine`), parsed by bash-3.2 `osx/pick-mic.sh`. Bare binary OK: enumeration needs no TCC.
   - Applied via `kAudioOutputUnitProperty_CurrentDevice` on inputNode's unit; device read back and printed (ground truth).
@@ -213,8 +222,16 @@ The repo has a few components:
   - Tap = `CATapDescription` (global, no exclusions, `muteBehavior=.unmuted`, private) → private aggregate device (default output as main sub-device, tap auto-start) → IOProc block → `AVAudioFile`.
   - Denied system-audio permission = **silent buffers, no error** → summary flags all-zero streams. Don't drop this check.
 - **Meeting detection:** calendar event window AND (mic in use via `kAudioDevicePropertyDeviceIsRunningSomewhere` OR meeting app running: Zoom/Teams/Webex/browser Meet). Ad-hoc calls without event still recorded (no calendar meta).
-- **Transcription:** on-device, behind a `Transcriber` protocol.
-  - Default: **FluidAudio** (CoreML/ANE) Parakeet TDT v3 (multilingual, fast).
+- **Transcription:** on-device, behind PACore `Transcriber` (URL → `[TimedWord]`) + `SpeakerDiarizer` (URL → `[SpeakerTurn]`) protocols.
+  - ⚠️ Not `Diarizer`: FluidAudio exports a public `Diarizer` protocol → ambiguous in `pa` (imports both). New PACore public names: check FluidAudio for clashes.
+  - `pa/FluidEngines.swift` (written vs v0.17.4 source, not compiled yet): `FluidTranscriber` = `AsrModels.downloadAndLoad(.v3)` → `AsrManager` (same config as `fluidaudiocli transcribe`) → fresh `TdtDecoderState` per file → `buildWordTimings`. v0.17.4 `transcribe` needs `decoderState: inout` (API.md is stale). `FluidDiarizer` = `OfflineDiarizerManager.prepareModels()` + `process(url)`; `@unchecked Sendable` (manager read-only after load).
+  - `pa transcribe [DIR] [--stamp S] [--me NAME] [--no-diarize] [--upload]`: newest capture default; mic speaker default `NSFullUserName()`; writes `pa-<stamp>-transcript.json` next to WAVs; reuses that file's id on re-run → server upsert, no duplicates. `meeting` = null (no calendar yet).
+  - Default: **FluidAudio** (CoreML/ANE) Parakeet TDT v3 (multilingual, fast); pinned `.upToNextMinor(from: "0.17.4")` (0.x API churn). Adapter: `buildWordTimings(from: tokenTimings)` → words; `OfflineDiarizerManager` ids `S1…`.
+  - FluidAudio's `NemoTextProcessing` xcframework = static lib (checked) → no dylib to bundle in `PA.app`. Its resource bundle only used by TTS.
+  - `Package.swift`: `pa` + FluidAudio declared only `#if os(macOS)` → Linux resolves/tests PACore with the manifest as-is. Don't move them out of the guard.
+  - PACore `Transcript.swift` (built, unit-tested, mutation-checked; not yet run on real audio): `transcribeRecording` = mic words → `micSpeaker` (headphones → mic = local user only); system words → diarized. `assignSpeakers` (max overlap, else nearest turn ≤0.5s, else nil) → `relabelSpeakers` (`Speaker N` by first appearance) → `groupSegments` (split on speaker change, gap >1.5s, sentence end past 20s, hard 45s) → `mergeStreams` (by start, ties = stream order).
+  - Diarization failure = fail safe: speakers nil, `diarizationModel` nil, warning; ASR failure throws.
+  - `findCaptures` pairs `pa-<yyyyMMdd-HHmmss>-{system,mic}.wav`; stamp = Mac local time. `makeTranscriptUpload` → UTC ISO, lowercase id.
   - Fallback/alt: Apple `SpeechAnalyzer`/`SpeechTranscriber` (macOS 26); WhisperKit if accuracy on a language demands it.
 - **Speaker ID:** FluidAudio diarization on system stream → clusters. Naming: per-user voice embeddings of known speakers (labeled in web UI), matched against calendar attendees; unknown → `Speaker N`. Server-side LLM may propose names from context; never overwrite a user label.
 - **Storage/queue:** audio + pending uploads in `~/Library/Application Support/<bundle id>/`; persistent upload queue with retry (offline-safe). Raw audio deleted after successful upload (configurable retention).

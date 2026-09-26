@@ -34,6 +34,7 @@ All configuration is in `config.json`. There are no env vars.
 - `llm.providers`: OpenAI-compatible endpoints (local vLLM/llama.cpp, OpenRouter, …).
 - `llm.tasks`: routes `summary` / `search` / `embed` to a provider+model. If a task isn't routed, that feature is off. Jobs that need it wait in the queue until you route it.
   - A task can also take a list of routes. The first is the default. For `summary`, each user can pick any listed route in the web UI, e.g. `[{local}, {openrouter}]` to offer a paid remote model. Users can only pick routes you list here.
+  - Optional `contextTokens` per route = the model's context window (vLLM: `max_model_len` in `/v1/models`). Meetings too long for it are summarized in parts (notes per part, then one combined summary). Without it, the whole transcript is tried first and split only if the model replies that it's too long.
 
 ### Production (systemd user service)
 
@@ -75,5 +76,15 @@ build/PA.app/Contents/MacOS/pa pair https://your-server alice   # shows a 6-digi
 ```
 
 Sign in to the web UI, open Devices, and type in the code. `pa` stores the token in the Keychain and the server URL in `config.json`. `pa status` asks the server for the device's pairing state. `pa upload file.json` uploads a transcript in the `TranscriptUpload` format (see `shared/api.ts` and `shared/fixtures/transcript-upload.json`). Plain `http://` is only accepted for `localhost`.
+
+To transcribe a recording on the Mac (Parakeet v3 speech-to-text + speaker diarization via [FluidAudio](https://github.com/FluidInference/FluidAudio); models download on first run):
+
+```sh
+./bench-asr.sh                                    # FluidAudio's own CLI on the newest capture: speed + raw transcripts
+build/PA.app/Contents/MacOS/pa transcribe          # newest capture → ~/pa-test-capture/pa-<stamp>-transcript.json
+build/PA.app/Contents/MacOS/pa transcribe --upload # …and upload it to the paired server
+```
+
+`pa transcribe` labels the mic stream as you (`--me NAME`, default: your macOS full name) and splits the system stream into `Speaker 1`, `Speaker 2`, …. Use `--stamp yyyyMMdd-HHmmss` to pick an older recording and `--no-diarize` to skip speaker separation. Re-running on the same recording keeps its id, so a re-upload replaces the transcript instead of duplicating it.
 
 Launch `test-capture` with `open` as shown. If you run the binary directly from a terminal, macOS attributes the permission prompts to the terminal app instead of PA.

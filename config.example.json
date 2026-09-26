@@ -8,8 +8,8 @@
     ],
     "tasks": {
       "summary": [
-        { "provider": "local", "model": "qwen3-32b" },
-        { "provider": "openrouter", "model": "anthropic/claude-sonnet-4.5" }
+        { "provider": "local", "model": "qwen3-32b", "contextTokens": 32768 },
+        { "provider": "openrouter", "model": "anthropic/claude-sonnet-4.5", "contextTokens": 200000 }
       ],
       "search": { "provider": "local", "model": "qwen3-32b" },
       "embed": { "provider": "local", "model": "bge-m3" }

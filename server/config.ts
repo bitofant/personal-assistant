@@ -15,7 +15,12 @@ export interface LlmProvider {
 export interface LlmRoute {
   provider: string;
   model: string;
+  /** Model's context window (prompt + reply); null = unknown → try whole transcript, chunk only on overflow. */
+  contextTokens: number | null;
 }
+
+/** Below this, prompt overhead + reply leave no room for transcript. */
+export const MIN_CONTEXT_TOKENS = 4096;
 
 // Wire type is the source of truth; `satisfies` keeps this list from drifting.
 export const LLM_TASKS = ["summary", "search", "embed"] as const satisfies readonly LlmTaskName[];
@@ -92,7 +97,10 @@ export function parseConfig(raw: unknown): Config {
         errors.push(`${rat}.provider "${r.provider}" not in llm.providers`);
       if (routes.some((q) => q.provider === r.provider && q.model === r.model))
         errors.push(`${rat} duplicated`);
-      routes.push({ provider: r.provider, model: r.model });
+      const ctx = r.contextTokens ?? null;
+      if (ctx !== null && (!Number.isInteger(ctx) || (ctx as number) < MIN_CONTEXT_TOKENS))
+        errors.push(`${rat}.contextTokens must be an integer ≥ ${MIN_CONTEXT_TOKENS}`);
+      routes.push({ provider: r.provider, model: r.model, contextTokens: (ctx as number | null) });
     }
     tasks[key as LlmTask] = routes;
   }
