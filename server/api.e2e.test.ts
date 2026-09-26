@@ -10,6 +10,7 @@ import type {
   InstructionsResponse,
   LlmStatusResponse,
   PairResponse,
+  SearchResponse,
   SettingsResponse,
   SignupResponse,
   SummarizeResponse,
@@ -132,6 +133,27 @@ describe("API flow", () => {
     expect(detail.segments).toHaveLength(3);
     expect(detail.deviceId).toBe(deviceId);
     expect((await fetch(`${base}/api/transcripts/nope`, { headers: { cookie } })).status).toBe(404);
+  });
+
+  it("search: session required, q validated, hits over segments + attendees", async () => {
+    const search = (qs: string) => fetch(`${base}/api/search?${qs}`, { headers: { cookie } });
+    expect((await fetch(`${base}/api/search?q=roadmap`)).status).toBe(401);
+    expect((await fetch(`${base}/api/search?q=roadmap`, { headers: bearer })).status).toBe(401);
+    expect((await search("q=%20")).status).toBe(400);
+    expect((await search("q=x&limit=abc")).status).toBe(400);
+
+    const r = (await (await search(`q=${encodeURIComponent('bob "q4 roadmap"')}`)).json()) as SearchResponse;
+    expect(r.truncated).toBe(false);
+    expect(r.results).toHaveLength(1);
+    expect(r.results[0]).toMatchObject({
+      transcript: { id: upload.id.toLowerCase(), title: "Alice / Bob 1:1", deviceName: "MacBook Pro" },
+      metaMatch: true,
+      segmentMatchCount: 1,
+    });
+    expect(r.results[0].segments[0].parts.filter((p) => p.match).map((p) => p.text)).toEqual(["Q4 roadmap"]);
+    // FTS syntax is literal, never a 500.
+    expect((await search(`q=${encodeURIComponent('NEAR( "unclosed title:x *')}`)).status).toBe(200);
+    expect(((await (await search("q=zebra")).json()) as SearchResponse).results).toEqual([]);
   });
 
   it("LLM status: session required; unrouted tasks report off, not an error", async () => {

@@ -159,6 +159,43 @@ export interface TranscriptDetail extends TranscriptUpload {
   summaryJob: JobState | null;
 }
 
+// ---- Search ----
+
+/**
+ * GET /api/search?q=…&limit=… (web). Keyword search over titles, attendees (names + emails) and segment text.
+ * `q`: words (prefix-matched) and "quoted phrases"; every term must appear somewhere in the transcript.
+ * Case- and accent-insensitive. `limit` 1–50, default 20. Blank `q` → 400.
+ */
+export interface SearchResponse {
+  results: SearchResult[];
+  /** More transcripts matched than `limit`. */
+  truncated: boolean;
+}
+
+export interface SearchResult {
+  transcript: TranscriptListItem;
+  /** Title or attendees matched (not only spoken text). */
+  metaMatch: boolean;
+  /** Total matching segments in this transcript. */
+  segmentMatchCount: number;
+  /** Best few matching segments, in transcript order. */
+  segments: SearchSegmentHit[];
+}
+
+export interface SearchSegmentHit {
+  /** Index into `TranscriptDetail.segments`. */
+  index: number;
+  start: number;
+  speaker: string | null;
+  /** Full segment text split into plain and matched runs (render matched runs highlighted; never as HTML). */
+  parts: TextPart[];
+}
+
+export interface TextPart {
+  text: string;
+  match: boolean;
+}
+
 // ---- Summaries ----
 
 /** Descriptions + built-in instructions: `shared/instructions.ts`. */

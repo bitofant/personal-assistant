@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState, type FormEvent, type ReactNode } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type FormEvent, type ReactNode } from "react";
 import type {
   DeviceInfo,
   DeviceListResponse,
@@ -15,6 +15,8 @@ import { formatDateTime, formatDuration, formatOffset, formatValue } from "../sh
 import { describeInstructionsSource, meetingTypeLabel } from "../shared/instructions.js";
 import { renderMarkdown } from "../shared/markdown.js";
 import { api, ApiError } from "./api.js";
+import { parseSearchHash, parseTranscriptHash, transcriptHash } from "./routes.js";
+import { Search, SearchBox } from "./Search.js";
 import { SummarySettings } from "./Settings.js";
 import { summaryStatusView, type SummaryTone } from "./summaryState.js";
 import { ErrorLine, muted, routeKey, routeLabel } from "./ui.js";
@@ -41,17 +43,29 @@ export function App() {
   if (me === null) return <Shell><Login onLogin={setMe} /></Shell>;
 
   const logout = () => api("/auth/logout", { method: "POST" }).finally(() => setMe(null));
-  const detail = /^#\/t\/(.+)$/.exec(hash);
+  const detail = parseTranscriptHash(hash);
+  const searchQ = parseSearchHash(hash);
   return (
     <Shell>
       <nav style={{ display: "flex", gap: "1rem", alignItems: "baseline" }}>
         <a href="#/">Transcripts</a>
         <a href="#/settings">Summary settings</a>
         <a href="#/devices">Devices</a>
+        <SearchBox initial={searchQ ?? ""} />
         <span style={{ marginLeft: "auto" }}>{me.username}</span>
         <button onClick={logout}>Log out</button>
       </nav>
-      {hash === "#/devices" ? <Devices /> : hash === "#/settings" ? <SummarySettings /> : detail ? <Transcript id={detail[1]} /> : <Transcripts />}
+      {hash === "#/devices" ? (
+        <Devices />
+      ) : hash === "#/settings" ? (
+        <SummarySettings />
+      ) : searchQ !== null ? (
+        <Search q={searchQ} />
+      ) : detail ? (
+        <Transcript id={detail.id} seg={detail.seg} />
+      ) : (
+        <Transcripts />
+      )}
     </Shell>
   );
 }
@@ -117,7 +131,7 @@ function Transcripts() {
         {items.map((t) => (
           <tr key={t.id}>
             <td>{formatDateTime(t.startedAt)}</td>
-            <td><a href={`#/t/${t.id}`}>{t.title ?? "(ad-hoc call)"}</a></td>
+            <td><a href={transcriptHash(t.id)}>{t.title ?? "(ad-hoc call)"}</a></td>
             <td>{formatDuration(t.startedAt, t.endedAt)}</td>
             <td>{formatValue(t.attendeeCount)}</td>
             <td>{formatValue(t.calendarName)}</td>
@@ -129,12 +143,18 @@ function Transcripts() {
   );
 }
 
-function Transcript({ id }: { id: string }) {
+function Transcript({ id, seg }: { id: string; seg: number | null }) {
   const [t, setT] = useState<TranscriptDetail | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const target = useRef<HTMLParagraphElement>(null);
   useEffect(() => {
     api<TranscriptDetail>(`/transcripts/${encodeURIComponent(id)}`).then(setT, (e: Error) => setError(e.message));
   }, [id]);
+  // Deep link from search: bring the matched segment into view once loaded.
+  // Braces: newer Chromium's scrollIntoView returns a Promise, which React rejects as an effect cleanup.
+  useEffect(() => {
+    target.current?.scrollIntoView({ block: "center" });
+  }, [t, seg]);
 
   if (error) return <ErrorLine error={error} />;
   if (!t) return <p>Loading…</p>;
@@ -153,7 +173,7 @@ function Transcript({ id }: { id: string }) {
       <h3>Transcript</h3>
       <div>
         {t.segments.map((s, i) => (
-          <p key={i} style={{ margin: "0.3rem 0" }}>
+          <p key={i} ref={i === seg ? target : undefined} style={{ margin: "0.3rem 0", background: i === seg ? "#fff3b0" : undefined }}>
             <span style={{ color: "#888", fontVariantNumeric: "tabular-nums" }}>{formatOffset(s.start)}</span>{" "}
             <strong>{formatValue(s.speaker)}:</strong> {s.text}
           </p>
