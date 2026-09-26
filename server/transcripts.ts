@@ -94,10 +94,15 @@ function isTime(v: unknown): boolean {
 }
 
 /** Canonical UTC ISO; requires an explicit zone so a device's local time can't be misread. */
-function isoTime(v: unknown, at: string, errors: string[]): string | null {
+export function parseIsoTime(v: unknown): string | null {
   const ok = typeof v === "string" && /(Z|[+-]\d\d:?\d\d)$/.test(v) && !Number.isNaN(Date.parse(v));
-  if (!ok) { errors.push(`${at} must be an ISO 8601 timestamp with zone`); return null; }
-  return new Date(v as string).toISOString();
+  return ok ? new Date(v as string).toISOString() : null;
+}
+
+function isoTime(v: unknown, at: string, errors: string[]): string | null {
+  const t = parseIsoTime(v);
+  if (t === null) errors.push(`${at} must be an ISO 8601 timestamp with zone`);
+  return t;
 }
 
 // ---- storage (per-user DB) ----

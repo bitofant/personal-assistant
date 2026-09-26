@@ -15,7 +15,7 @@ import { formatDateTime, formatDuration, formatOffset, formatValue } from "../sh
 import { describeInstructionsSource, meetingTypeLabel } from "../shared/instructions.js";
 import { renderMarkdown } from "../shared/markdown.js";
 import { api, ApiError } from "./api.js";
-import { parseSearchHash, parseTranscriptHash, transcriptHash } from "./routes.js";
+import { emptySearch, parseSearchHash, parseTranscriptHash, transcriptHash } from "./routes.js";
 import { Search, SearchBox } from "./Search.js";
 import { SummarySettings } from "./Settings.js";
 import { summaryStatusView, type SummaryTone } from "./summaryState.js";
@@ -44,14 +44,14 @@ export function App() {
 
   const logout = () => api("/auth/logout", { method: "POST" }).finally(() => setMe(null));
   const detail = parseTranscriptHash(hash);
-  const searchQ = parseSearchHash(hash);
+  const search = parseSearchHash(hash);
   return (
     <Shell>
       <nav style={{ display: "flex", gap: "1rem", alignItems: "baseline" }}>
         <a href="#/">Transcripts</a>
         <a href="#/settings">Summary settings</a>
         <a href="#/devices">Devices</a>
-        <SearchBox initial={searchQ ?? ""} />
+        <SearchBox params={search ?? emptySearch} />
         <span style={{ marginLeft: "auto" }}>{me.username}</span>
         <button onClick={logout}>Log out</button>
       </nav>
@@ -59,8 +59,8 @@ export function App() {
         <Devices />
       ) : hash === "#/settings" ? (
         <SummarySettings />
-      ) : searchQ !== null ? (
-        <Search q={searchQ} />
+      ) : search ? (
+        <Search params={search} />
       ) : detail ? (
         <Transcript id={detail.id} seg={detail.seg} />
       ) : (
