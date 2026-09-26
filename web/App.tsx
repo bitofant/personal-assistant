@@ -1,15 +1,19 @@
-import { useCallback, useEffect, useState, type FormEvent, type ReactNode } from "react";
+import { useCallback, useEffect, useMemo, useState, type FormEvent, type ReactNode } from "react";
 import type {
   DeviceInfo,
   DeviceListResponse,
   MeResponse,
   SignupResponse,
+  SummarizeResponse,
   TranscriptDetail,
   TranscriptListItem,
   TranscriptListResponse,
+  TranscriptSummaryResponse,
 } from "../shared/api.js";
 import { formatDateTime, formatDuration, formatOffset, formatValue } from "../shared/format.js";
+import { renderMarkdown } from "../shared/markdown.js";
 import { api, ApiError } from "./api.js";
+import { summaryStatusView, type SummaryTone } from "./summaryState.js";
 
 function useHash(): string {
   const [hash, setHash] = useState(location.hash || "#/");
@@ -144,6 +148,8 @@ function Transcript({ id }: { id: string }) {
       {m && m.attendees.length > 0 && (
         <p>Attendees: {m.attendees.map((a) => a.name ?? a.email).join(", ")}</p>
       )}
+      <SummaryPanel key={t.id} transcriptId={t.id} initial={{ summary: t.summary, summaryJob: t.summaryJob }} />
+      <h3>Transcript</h3>
       <div>
         {t.segments.map((s, i) => (
           <p key={i} style={{ margin: "0.3rem 0" }}>
@@ -156,6 +162,65 @@ function Transcript({ id }: { id: string }) {
         ASR {t.asrModel} · diarization {formatValue(t.diarizationModel)} · received {formatDateTime(t.receivedAt)}
       </p>
     </article>
+  );
+}
+
+const TONE_COLOR: Record<SummaryTone, string> = { info: "#555", warn: "#a15c00", error: "crimson" };
+
+function SummaryPanel({ transcriptId, initial }: { transcriptId: string; initial: TranscriptSummaryResponse }) {
+  const [state, setState] = useState(initial);
+  const [error, setError] = useState<string | null>(null);
+  const { summary, summaryJob } = state;
+  const view = summaryStatusView(summaryJob, summary !== null);
+  const html = useMemo(() => (summary ? renderMarkdown(summary.text) : ""), [summary]);
+  const path = `/transcripts/${encodeURIComponent(transcriptId)}`;
+
+  // Poll the cheap summary endpoint only while the job is still going.
+  useEffect(() => {
+    if (view.pollMs === null) return;
+    const timer = setTimeout(() => {
+      api<TranscriptSummaryResponse>(`${path}/summary`).then(
+        (r) => (setState(r), setError(null)),
+        // Keep polling on a blip; a changed-but-equal state object re-arms this effect.
+        (e: Error) => (setError(e.message), setState((s) => ({ ...s }))),
+      );
+    }, view.pollMs);
+    return () => clearTimeout(timer);
+  }, [state, view.pollMs, path]);
+
+  const summarize = () =>
+    api<SummarizeResponse>(`${path}/summarize`, { body: {} }).then(
+      (r) => (setState((s) => ({ ...s, summaryJob: r.summaryJob })), setError(null)),
+      (e: Error) => setError(e.message),
+    );
+
+  return (
+    <section style={{ border: "1px solid #ddd", borderRadius: 6, padding: "0.5rem 1rem", margin: "1rem 0" }}>
+      <div style={{ display: "flex", alignItems: "baseline", gap: "1rem" }}>
+        <h3 style={{ margin: "0.5rem 0" }}>Summary</h3>
+        <button style={{ marginLeft: "auto" }} disabled={view.inProgress} onClick={() => void summarize()}>
+          {view.action}
+        </button>
+      </div>
+      {view.message && (
+        <p role="status" style={{ color: TONE_COLOR[view.tone] }}>
+          {view.inProgress && view.tone === "info" && "⏳ "}
+          {view.message}
+        </p>
+      )}
+      <ErrorLine error={error} />
+      {summary && (
+        <>
+          {summary.stale && !view.inProgress && (
+            <p style={{ color: TONE_COLOR.warn }}>The transcript changed after this summary was made.</p>
+          )}
+          <div className="summary" style={{ opacity: view.inProgress ? 0.6 : 1 }} dangerouslySetInnerHTML={{ __html: html }} />
+          <p style={{ color: "#888", fontSize: "0.8rem" }}>
+            {summary.meetingType} · {summary.provider}/{summary.model} · instructions {summary.instructionsSource} · {formatDateTime(summary.createdAt)}
+          </p>
+        </>
+      )}
+    </section>
   );
 }
 

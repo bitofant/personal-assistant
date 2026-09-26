@@ -102,8 +102,16 @@ function isoTime(v: unknown, at: string, errors: string[]): string | null {
 
 // ---- storage (per-user DB) ----
 
-export function upsertTranscript(db: Db, deviceId: string, t: TranscriptUpload, raw: string, now: number): TranscriptUploadResponse {
-  const existed = db.prepare("SELECT 1 FROM transcripts WHERE id = ?").get(t.id) !== undefined;
+/** `changed` = new or different content; identical re-upload (device retry) = false, so no re-summarize. */
+export function upsertTranscript(
+  db: Db,
+  deviceId: string,
+  t: TranscriptUpload,
+  raw: string,
+  now: number,
+): TranscriptUploadResponse & { changed: boolean } {
+  const data = JSON.stringify(t);
+  const prev = db.prepare("SELECT data FROM transcripts WHERE id = ?").get(t.id) as { data: string } | undefined;
   db.prepare(
     `INSERT INTO transcripts (id, device_id, started_at, ended_at, title, calendar_name, event_id, series_id,
        attendee_count, segment_count, raw, data, received_at, updated_at)
@@ -112,7 +120,9 @@ export function upsertTranscript(db: Db, deviceId: string, t: TranscriptUpload, 
      ON CONFLICT(id) DO UPDATE SET device_id = excluded.device_id, started_at = excluded.started_at,
        ended_at = excluded.ended_at, title = excluded.title, calendar_name = excluded.calendar_name,
        event_id = excluded.event_id, series_id = excluded.series_id, attendee_count = excluded.attendee_count,
-       segment_count = excluded.segment_count, raw = excluded.raw, data = excluded.data, updated_at = excluded.updated_at`,
+       segment_count = excluded.segment_count, raw = excluded.raw, data = excluded.data,
+       -- updated_at = content last changed; drives summary staleness, so a no-op re-upload keeps it.
+       updated_at = CASE WHEN data = excluded.data THEN updated_at ELSE excluded.updated_at END`,
   ).run({
     id: t.id,
     deviceId,
@@ -126,10 +136,10 @@ export function upsertTranscript(db: Db, deviceId: string, t: TranscriptUpload, 
     attendeeCount: t.meeting ? t.meeting.attendees.length : null,
     segmentCount: t.segments.length,
     raw,
-    data: JSON.stringify(t),
+    data,
     now,
   });
-  return { id: t.id, created: !existed };
+  return { id: t.id, created: !prev, changed: prev?.data !== data };
 }
 
 interface Row {
@@ -165,7 +175,13 @@ export function listTranscripts(db: Db, deviceNames: Map<string, string>): Trans
   }));
 }
 
-export function getTranscript(db: Db, id: string, deviceNames: Map<string, string>): TranscriptDetail | null {
+/** `id` must already be canonical (lowercase). */
+export function transcriptExists(db: Db, id: string): boolean {
+  return db.prepare("SELECT 1 FROM transcripts WHERE id = ?").get(id) !== undefined;
+}
+
+// Summary fields live elsewhere (summaries table, app.db jobs); app.ts joins them.
+export function getTranscript(db: Db, id: string, deviceNames: Map<string, string>): Omit<TranscriptDetail, "summary" | "summaryJob"> | null {
   const r = db.prepare("SELECT * FROM transcripts WHERE id = ?").get(id.toLowerCase()) as Row | undefined;
   if (!r) return null;
   return {

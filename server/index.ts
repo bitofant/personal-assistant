@@ -62,9 +62,9 @@ process.on("uncaughtException", (err) => console.error("Uncaught exception (kept
 process.on("unhandledRejection", (err) => console.error("Unhandled rejection (kept alive):", err));
 
 for (const sig of ["SIGINT", "SIGTERM"] as const) {
-  process.on(sig, () => {
+  process.on(sig, async () => {
     server.close();
-    app.close();
+    await app.close();
     console.log(`personal-assistant stopped (${sig}).`);
     process.exit(0);
   });

@@ -56,6 +56,26 @@ export const APP_MIGRATIONS = [
   );
   CREATE INDEX devices_user ON devices(user_id);
   `,
+  // Jobs in app.db so one worker can scan all users; payload = refs only (ids), never content.
+  `
+  CREATE TABLE jobs (
+    id INTEGER PRIMARY KEY,
+    user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    type TEXT NOT NULL,
+    key TEXT NOT NULL,
+    payload TEXT NOT NULL,
+    status TEXT NOT NULL CHECK (status IN ('queued', 'running', 'done', 'failed')),
+    generation INTEGER NOT NULL DEFAULT 1,
+    attempts INTEGER NOT NULL DEFAULT 0,
+    failures INTEGER NOT NULL DEFAULT 0,
+    run_at INTEGER NOT NULL,
+    last_error TEXT,
+    created_at INTEGER NOT NULL,
+    updated_at INTEGER NOT NULL,
+    UNIQUE (user_id, type, key)
+  );
+  CREATE INDEX jobs_due ON jobs(status, run_at);
+  `,
 ] as const;
 
 // Per-user DB: all of one user's content. Isolation by file, not by WHERE user_id.
@@ -79,6 +99,22 @@ export const USER_MIGRATIONS = [
   );
   CREATE INDEX transcripts_started ON transcripts(started_at);
   CREATE INDEX transcripts_series ON transcripts(series_id);
+  `,
+  // One current summary per transcript; derived, regenerable from raw.
+  `
+  CREATE TABLE summaries (
+    transcript_id TEXT PRIMARY KEY REFERENCES transcripts(id) ON DELETE CASCADE,
+    text TEXT NOT NULL,
+    meeting_type TEXT NOT NULL,
+    instructions_source TEXT NOT NULL,
+    instructions TEXT NOT NULL,
+    provider TEXT NOT NULL,
+    model TEXT NOT NULL,
+    prompt_tokens INTEGER,
+    completion_tokens INTEGER,
+    transcript_updated_at INTEGER NOT NULL,
+    created_at INTEGER NOT NULL
+  );
   `,
 ] as const;
 
