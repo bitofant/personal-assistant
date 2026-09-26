@@ -34,10 +34,28 @@ describe("parseSearchRequest", () => {
   it("q required (blank or only punctuation → 400); limit defaults to 20, clamped 1–50", () => {
     expect(() => p("")).toThrow(/q required/);
     expect(() => p("q=%20-%20")).toThrow(/q required/);
-    expect(p("q=plan")).toEqual({ terms: [`"plan"*`], limit: 20 });
+    expect(p("q=plan")).toMatchObject({ terms: [`"plan"*`], limit: 20 });
     expect(p("q=plan&limit=500").limit).toBe(50);
     expect(p("q=plan&limit=0").limit).toBe(1);
     expect(() => p("q=plan&limit=abc")).toThrow(/limit/);
+  });
+
+  it("filters: from/to → UTC ISO (zone required, from < to); with → attendee-column phrase-prefix", () => {
+    expect(p("q=plan").filters).toEqual({ from: null, to: null, with: [] });
+    const f = p("q=plan&from=2026-09-01T00:00:00%2B02:00&to=2026-10-01T00:00:00Z&with=Bob&with=%20alice%20%20ex%20").filters;
+    expect(f).toEqual({ from: "2026-08-31T22:00:00.000Z", to: "2026-10-01T00:00:00.000Z", with: [`attendees : "Bob"*`, `attendees : "alice ex"*`] });
+    expect(() => p("q=plan&from=2026-09-01")).toThrow(/from/);
+    expect(() => p("q=plan&to=nope")).toThrow(/to/);
+    expect(() => p("q=plan&from=2026-09-02T00:00:00Z&to=2026-09-01T00:00:00Z")).toThrow(/before/);
+    expect(() => p("q=plan&with=%20-%20")).toThrow(/with/);
+    expect(() => p(`q=plan${"&with=a".repeat(6)}`)).toThrow(/with/);
+    expect(p(`with=${encodeURIComponent('x" OR y')}`).filters.with).toEqual([`attendees : "x"" OR y"*`]);
+  });
+
+  it("q optional when a filter is given", () => {
+    expect(p("from=2026-09-01T00:00:00Z")).toMatchObject({ terms: [] });
+    expect(p("with=bob").terms).toEqual([]);
+    expect(() => p("q=&limit=5")).toThrow(/q required/);
   });
 });
 
@@ -61,7 +79,10 @@ describe("searchTranscripts", () => {
     return d;
   };
   const names = new Map([["dev1", "Mac"]]);
-  const search = (d: Database.Database, q: string, limit = 20) => searchTranscripts(d, parseSearchQuery(q), limit, names);
+  const noFilters = { from: null, to: null, with: [] };
+  const search = (d: Database.Database, q: string, limit = 20) => searchTranscripts(d, { terms: parseSearchQuery(q), limit, filters: noFilters }, names);
+  const filtered = (d: Database.Database, qs: string) => searchTranscripts(d, parseSearchRequest(new URLSearchParams(qs)), names);
+  const ids = (r: { results: { transcript: { id: string } }[] }) => r.results.map((x) => x.transcript.id);
 
   it("segment hit: highlighted parts, speaker, index; list item joined", () => {
     const r = search(db(), "roadmap");
@@ -168,7 +189,56 @@ describe("searchTranscripts", () => {
     expect(hit.segments.map((s) => s.index)).toEqual([1, 3, 4]); // weakest (diluted) match dropped
   });
 
-  it("no terms → empty result (no query run)", () => {
-    expect(searchTranscripts(db(), [], 20, names)).toEqual({ results: [], truncated: false });
+  it("no terms and no filters → empty result (no query run)", () => {
+    expect(searchTranscripts(db(), { terms: [], limit: 20, filters: noFilters }, names)).toEqual({ results: [], truncated: false });
+  });
+
+  describe("filters", () => {
+    const FIX = "6f1c2b7e-3d4a-4e5f-9a8b-1c2d3e4f5a6b"; // started 2026-09-24T07:00:03Z, Alice + Bob
+    const ID3 = "00000000-0000-4000-8000-000000000003";
+    const withTwo = () => {
+      const d = db();
+      const later = { ...fixture(), id: ID2, startedAt: "2026-10-02T10:00:00Z", endedAt: "2026-10-02T10:30:00Z",
+        meeting: { ...fixture().meeting, title: "Roadmap with Zoë", organizer: null, attendees: [{ name: "Zoë Müller", email: "zoe@corp.example" }] } };
+      upsertTranscript(d, "dev1", parseTranscriptUpload(later), "", 2);
+      const adhoc = { ...fixture(), id: ID3, startedAt: "2026-09-10T10:00:00Z", endedAt: "2026-09-10T10:05:00Z", meeting: null };
+      upsertTranscript(d, "dev1", parseTranscriptUpload(adhoc), "", 3);
+      return d;
+    };
+
+    it("date range: from inclusive, to exclusive, on recording start", () => {
+      const d = withTwo();
+      expect(ids(filtered(d, "q=roadmap"))).toHaveLength(3);
+      expect(ids(filtered(d, "q=roadmap&from=2026-09-24T07:00:03Z&to=2026-10-02T10:00:00Z"))).toEqual([FIX]);
+      expect(ids(filtered(d, "q=roadmap&from=2026-09-24T07:00:04Z")).sort()).toEqual([ID2]);
+      expect(ids(filtered(d, "q=roadmap&to=2026-09-24T07:00:03Z"))).toEqual([ID3]);
+    });
+
+    it("with: attendee/organizer name or email prefix, case + accent insensitive; several = all present", () => {
+      const d = withTwo();
+      expect(ids(filtered(d, "q=roadmap&with=zoe"))).toEqual([ID2]);
+      expect(ids(filtered(d, "q=roadmap&with=MULLER"))).toEqual([ID2]);
+      expect(ids(filtered(d, "q=roadmap&with=bob%40example.com"))).toEqual([FIX]);
+      expect(ids(filtered(d, "q=roadmap&with=alice&with=bob"))).toEqual([FIX]);
+      expect(ids(filtered(d, "q=roadmap&with=alice&with=zoe"))).toEqual([]);
+      // Speech/title mentions don't count as attendance.
+      expect(ids(filtered(d, "q=roadmap&with=roadmap"))).toEqual([]);
+    });
+
+    it("filter doesn't change ranking inputs: metaMatch only from q", () => {
+      const [hit] = filtered(withTwo(), "q=hiring&with=bob").results;
+      expect(hit).toMatchObject({ metaMatch: false, segmentMatchCount: 1 });
+    });
+
+    it("filters without q: newest first, no segment hits; limit → truncated", () => {
+      const d = withTwo();
+      const r = filtered(d, "from=2026-09-01T00:00:00Z");
+      expect(ids(r)).toEqual([ID2, FIX, ID3]);
+      expect(r.results[0]).toMatchObject({ metaMatch: false, segmentMatchCount: 0, segments: [] });
+      expect(ids(filtered(d, "with=alice"))).toEqual([FIX]);
+      const one = filtered(d, "from=2026-09-01T00:00:00Z&limit=1");
+      expect(one).toMatchObject({ truncated: true });
+      expect(ids(one)).toEqual([ID2]);
+    });
   });
 });

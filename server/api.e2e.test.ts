@@ -154,6 +154,13 @@ describe("API flow", () => {
     // FTS syntax is literal, never a 500.
     expect((await search(`q=${encodeURIComponent('NEAR( "unclosed title:x *')}`)).status).toBe(200);
     expect(((await (await search("q=zebra")).json()) as SearchResponse).results).toEqual([]);
+    // Filters (fixture: started 2026-09-24T07:00:03Z, attendees Alice + Bob).
+    const hits = async (qs: string) => ((await (await search(qs)).json()) as SearchResponse).results.length;
+    expect(await hits("q=roadmap&with=bob&from=2026-09-24T00:00:00%2B02:00&to=2026-09-25T00:00:00%2B02:00")).toBe(1);
+    expect(await hits("q=roadmap&from=2026-09-25T00:00:00Z")).toBe(0);
+    expect(await hits("q=roadmap&with=carol")).toBe(0);
+    expect(await hits("with=alice")).toBe(1);
+    expect((await search("from=2026-09-24")).status).toBe(400);
   });
 
   it("LLM status: session required; unrouted tasks report off, not an error", async () => {

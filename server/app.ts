@@ -171,8 +171,8 @@ export function createApp(opts: AppOptions): App {
   // ---- search ----
   route("GET", "/api/search", ({ req, res }) => {
     const user = auth.requireUser(req);
-    const { terms, limit } = parseSearchRequest(new URL(req.url ?? "/", "http://x").searchParams);
-    sendJson(res, searchTranscripts(store.user(user.id), terms, limit, devices.names(user.id)) satisfies SearchResponse);
+    const parsed = parseSearchRequest(new URL(req.url ?? "/", "http://x").searchParams);
+    sendJson(res, searchTranscripts(store.user(user.id), parsed, devices.names(user.id)) satisfies SearchResponse);
   });
 
   function summaryOf(userId: number, transcriptId: string): TranscriptSummaryResponse {

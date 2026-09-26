@@ -162,9 +162,12 @@ export interface TranscriptDetail extends TranscriptUpload {
 // ---- Search ----
 
 /**
- * GET /api/search?q=…&limit=… (web). Keyword search over titles, attendees (names + emails) and segment text.
+ * GET /api/search?q=…&from=…&to=…&with=…&limit=… (web). Keyword search over titles, attendees (names + emails) and segment text.
  * `q`: words (prefix-matched) and "quoted phrases"; every term must appear somewhere in the transcript.
- * Case- and accent-insensitive. `limit` 1–50, default 20. Blank `q` → 400.
+ * Case- and accent-insensitive. `limit` 1–50, default 20.
+ * Filters (narrow only, never affect ranking/`metaMatch`): `from` (inclusive) / `to` (exclusive) = ISO 8601 with zone,
+ * on recording `startedAt`; `with` (repeatable, ≤5, all must match) = attendee/organizer name or email, word-prefix.
+ * No `q` + ≥1 filter → filtered list, newest first, no segment hits. Neither → 400.
  */
 export interface SearchResponse {
   results: SearchResult[];

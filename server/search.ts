@@ -1,9 +1,10 @@
 import type { SearchResponse, SearchSegmentHit, TextPart } from "../shared/api.js";
 import type { Db } from "./db.js";
 import { HttpError } from "./http.js";
-import { transcriptListItems } from "./transcripts.js";
+import { parseIsoTime, transcriptListItems } from "./transcripts.js";
 
 const MAX_TERMS = 10; // bounds query cost: one subquery per term
+const MAX_WITH = 5; // same: one subquery per attendee filter
 const MAX_LIMIT = 50;
 const DEFAULT_LIMIT = 20;
 const SEGMENT_HITS = 3;
@@ -31,9 +32,42 @@ export function parseSearchQuery(q: string): string[] {
   return terms;
 }
 
-export function parseSearchRequest(params: URLSearchParams): { terms: string[]; limit: number } {
+export interface SearchFilters {
+  /** UTC ISO; recording start ≥ from. */
+  from: string | null;
+  /** UTC ISO; recording start < to. */
+  to: string | null;
+  /** FTS queries on the attendees column (attendee + organizer names/emails); all must match. */
+  with: string[];
+}
+
+export interface SearchRequest {
+  terms: string[];
+  limit: number;
+  filters: SearchFilters;
+}
+
+export function parseSearchRequest(params: URLSearchParams): SearchRequest {
   const terms = parseSearchQuery(params.get("q") ?? "");
-  if (!terms.length) throw new HttpError(400, "q required (words or \"quoted phrases\").");
+  const time = (name: "from" | "to") => {
+    const v = params.get(name);
+    if (v === null || v === "") return null;
+    const t = parseIsoTime(v);
+    if (t === null) throw new HttpError(400, `${name} must be an ISO 8601 timestamp with zone.`);
+    return t;
+  };
+  const from = time("from");
+  const to = time("to");
+  if (from && to && from >= to) throw new HttpError(400, "from must be before to.");
+  const people = params.getAll("with").map((v) => v.trim().replace(/\s+/g, " ")).filter((v) => v);
+  if (people.length > MAX_WITH) throw new HttpError(400, `at most ${MAX_WITH} with filters.`);
+  // Quoted phrase-prefix pinned to the attendees column: user text can't escape into FTS syntax.
+  const withQ = people.map((v) => {
+    if (!/[\p{L}\p{N}]/u.test(v)) throw new HttpError(400, "with must contain letters or digits.");
+    return `attendees : "${v.replaceAll('"', '""')}"*`;
+  });
+  const filters = { from, to, with: withQ };
+  if (!terms.length && !hasFilters(filters)) throw new HttpError(400, 'q required (words or "quoted phrases") unless filtering.');
   const raw = params.get("limit");
   let limit = DEFAULT_LIMIT;
   if (raw !== null) {
@@ -41,7 +75,24 @@ export function parseSearchRequest(params: URLSearchParams): { terms: string[]; 
     if (!Number.isInteger(n)) throw new HttpError(400, "limit must be an integer.");
     limit = Math.min(MAX_LIMIT, Math.max(1, n));
   }
-  return { terms, limit };
+  return { terms, limit, filters };
+}
+
+const hasFilters = (f: SearchFilters) => f.from !== null || f.to !== null || f.with.length > 0;
+
+/** CTEs ending in `ok(id, started_at)` = transcripts passing the filters; same MATERIALIZED rule as term CTEs. */
+function filterCtes(f: SearchFilters): { ctes: string[]; params: unknown[] } {
+  const ctes = f.with.map(
+    (_, i) => `a${i} AS MATERIALIZED (SELECT rowid AS rid FROM search_fts WHERE search_fts MATCH ?),
+      w${i} AS MATERIALIZED (SELECT DISTINCT r.transcript_id FROM a${i} JOIN search_rows r ON r.id = a${i}.rid)`,
+  );
+  const where = ["1"];
+  const params: unknown[] = [...f.with];
+  if (f.from) { where.push("started_at >= ?"); params.push(f.from); }
+  if (f.to) { where.push("started_at < ?"); params.push(f.to); }
+  f.with.forEach((_, i) => where.push(`id IN w${i}`));
+  ctes.push(`ok AS MATERIALIZED (SELECT id, started_at FROM transcripts WHERE ${where.join(" AND ")})`);
+  return { ctes, params };
 }
 
 /** FTS5 highlight() output → plain/matched runs. */
@@ -75,26 +126,41 @@ interface SegmentRow {
   speaker: string | null;
 }
 
-/** AND of terms per transcript (terms may match meta or different segments); ranked by summed bm25. */
-export function searchTranscripts(db: Db, terms: string[], limit: number, deviceNames: Map<string, string>): SearchResponse {
-  if (!terms.length) return { results: [], truncated: false };
+/**
+ * AND of terms per transcript (terms may match meta or different segments); ranked by summed bm25.
+ * Filters only narrow (never score). No terms = filtered list, newest first.
+ */
+export function searchTranscripts(db: Db, req: SearchRequest, deviceNames: Map<string, string>): SearchResponse {
+  const { terms, limit, filters } = req;
+  const filtered = hasFilters(filters);
+  if (!terms.length && !filtered) return { results: [], truncated: false };
+  const f = filtered ? filterCtes(filters) : { ctes: [], params: [] };
   const any = terms.join(" OR ");
-  // ⚠️ Every FTS scan sits in its own MATERIALIZED CTE, joined to search_rows outside it: bm25()/highlight()
-  // only work in a plain FTS scan, and inlined MATCH subqueries get re-run per row (minutes on 500k rows).
-  const termCtes = terms.map(
-    (_, i) => `f${i} AS MATERIALIZED (SELECT rowid AS rid FROM search_fts WHERE search_fts MATCH ?),
+  let hits: TranscriptHit[];
+  if (!terms.length) {
+    hits = db
+      .prepare(`WITH ${f.ctes.join(",\n")} SELECT id AS transcript_id, 0 AS score, 0 AS seg_count, 0 AS meta FROM ok ORDER BY started_at DESC, id LIMIT ?`)
+      .all(...f.params, limit + 1) as TranscriptHit[];
+  } else {
+    // ⚠️ Every FTS scan sits in its own MATERIALIZED CTE, joined to search_rows outside it: bm25()/highlight()
+    // only work in a plain FTS scan, and inlined MATCH subqueries get re-run per row (minutes on 500k rows).
+    const termCtes = terms.map(
+      (_, i) => `f${i} AS MATERIALIZED (SELECT rowid AS rid FROM search_fts WHERE search_fts MATCH ?),
       t${i} AS MATERIALIZED (SELECT DISTINCT r.transcript_id FROM f${i} JOIN search_rows r ON r.id = f${i}.rid)`,
-  );
-  const hits = db
-    .prepare(
-      `WITH ${termCtes.join(",\n")},
-       m AS MATERIALIZED (SELECT rowid AS rid, ${BM25} AS score FROM search_fts WHERE search_fts MATCH ?)
-       SELECT r.transcript_id, sum(m.score) AS score, count(r.seg) AS seg_count, max(r.seg IS NULL) AS meta
-       FROM m JOIN search_rows r ON r.id = m.rid
-       WHERE ${terms.map((_, i) => `r.transcript_id IN t${i}`).join(" AND ")}
-       GROUP BY r.transcript_id ORDER BY score, r.transcript_id LIMIT ?`,
-    )
-    .all(...terms, any, limit + 1) as TranscriptHit[];
+    );
+    const conds = terms.map((_, i) => `r.transcript_id IN t${i}`);
+    if (filtered) conds.push("r.transcript_id IN (SELECT id FROM ok)");
+    hits = db
+      .prepare(
+        `WITH ${[...f.ctes, ...termCtes].join(",\n")},
+         m AS MATERIALIZED (SELECT rowid AS rid, ${BM25} AS score FROM search_fts WHERE search_fts MATCH ?)
+         SELECT r.transcript_id, sum(m.score) AS score, count(r.seg) AS seg_count, max(r.seg IS NULL) AS meta
+         FROM m JOIN search_rows r ON r.id = m.rid
+         WHERE ${conds.join(" AND ")}
+         GROUP BY r.transcript_id ORDER BY score, r.transcript_id LIMIT ?`,
+      )
+      .all(...f.params, ...terms, any, limit + 1) as TranscriptHit[];
+  }
   const truncated = hits.length > limit;
   const top = hits.slice(0, limit);
   const ids = top.filter((h) => h.seg_count > 0).map((h) => h.transcript_id);

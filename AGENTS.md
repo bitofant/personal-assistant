@@ -39,7 +39,7 @@ The repo has a few components:
 
 ## Project state
 - Server scaffold (settled): config loading/validation, `GET /api/health`, static/Vite serving, systemd scripts.
-- Server (built): SQLite store, web auth, device pairing + approval, transcript ingest/list/detail, minimal web UI, LLM client + job queue, summaries (+ web view with job status), custom instructions + LLM meeting-type classify + per-user summary model (settings page), search v1 (FTS5 keyword + web page).
+- Server (built): SQLite store, web auth, device pairing + approval, transcript ingest/list/detail, minimal web UI, LLM client + job queue, summaries (+ web view with job status), custom instructions + LLM meeting-type classify + per-user summary model (settings page), search v1 (FTS5 keyword + date/attendee filters + web page).
 - osx: `pa test-capture` spike runs on the Mac; Zoom tap + mic (no VP) record (verified live).
 - Everything else below = planned, not built.
 - Default port **4200** (4000/4100 taken on the dev box by other services).
@@ -55,7 +55,7 @@ The repo has a few components:
 4. **osx: `pa upload <wav-dir>`** — manual transcribe + upload → first real end-to-end transcript on server.
 5. ~~**server: LLM client + job queue**~~ — done (see Server design → LLM / Background jobs).
 6. **server: summaries** — built: summarize job, rule + LLM classify, built-in + custom instructions (series > type > default), per-user model pick, settings page. Left: long-transcript chunking (map-reduce) if context overflows; maybe "instructions changed" stale flag; reuse series' type instead of re-classifying.
-7. **server: search** — v1 done (FTS5 keyword, see Server design → Search). Next v2: chunk+embed w/ `sqlite-vec`, hybrid merge, optional RAG answer; maybe filters (date, attendee), pagination.
+7. **server: search** — v1 done (FTS5 keyword + date/attendee filters, see Server design → Search). Next v2: chunk+embed w/ `sqlite-vec`, hybrid merge, optional RAG answer — blocked on real transcripts (to judge retrieval) + an embedding model on the dev box. Pagination skipped: >50 hits → refine with filters.
 8. **osx: daemon (`pa run`)** — EventKit work calendars, meeting detection, auto capture → transcribe → persistent upload queue, raw-audio retention; `osx/install.sh` LaunchAgent; `os.Logger` + log file.
 9. **Speaker naming** — label speakers in web UI, per-user voice embeddings, match vs attendees; LLM name proposals never overwrite user labels.
 10. **Ops/polish** — per-user export/delete, device list/revoke UI polish, backups of `data/`.
@@ -172,7 +172,9 @@ The repo has a few components:
   - ⚠️ Every FTS scan in its own `MATERIALIZED` CTE, joined to `search_rows` outside: inlined `MATCH` subqueries were re-run per row (76s → 0.5s on 500k segments, verified live); bm25()/highlight() also error inside joins.
   - ⚠️ `rowid = CAST(? AS INTEGER)`: better-sqlite3 binds JS numbers as REAL and FTS5 silently ignores `rowid = <real>` → wrong row's highlight (verified live). Don't drop the CAST.
   - highlight() only for shown segments (control-char markers → `TextPart[]`); web renders text nodes + `<mark>`, never HTML.
-  - Perf (1000 meetings × 500 segs, dev box): rare term ~10ms, term in ~50% of segments ~0.6s.
+  - Perf (1000 meetings × 500 segs, dev box): rare term ~10ms, term in ~50% of segments ~0.6s; filters add ~0 (verified live).
+  - Filters (`from`/`to`/`with`): narrow only, never score/`metaMatch`. `from` incl / `to` excl on `started_at`, ISO w/ zone → UTC (`parseIsoTime`, shared with ingest; stored ISO strings compare lexically). `with` (≤5, AND) = `attendees : "x"*` FTS query → case/accent-insensitive word prefix, same MATERIALIZED-CTE rule. No `q` + filter = list newest first.
+  - Web filters: hash holds local days (`from`/`to` inclusive); `searchApiPath` converts to [local midnight, day-after-`to` midnight) instants — server never guesses the user's zone. Nav box keeps active filters.
   - Web: nav `SearchBox` → `#/search?q=`; `web/routes.ts` = only hash builder/parser (unit-tested); `#/t/<id>/s/<n>` scrolls to + highlights segment. Verified live in headless Chromium.
 - **Search v2 (planned, not built):** hybrid — FTS5 + `sqlite-vec` (embeddings of ~1-min chunks) → merge/rerank → optional LLM answer citing chunks (RAG).
 - **Wire contract:** `shared/api.ts` is source of truth; Swift `Codable` mirrors it. JSON fixtures in `shared/fixtures/` decoded by tests on both sides to catch drift.
