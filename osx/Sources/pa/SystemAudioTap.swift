@@ -2,7 +2,8 @@ import AVFoundation
 import CoreAudio
 import Foundation
 
-/// Core Audio process tap → private aggregate device → IOProc → WAV.
+/// Global Core Audio tap → private aggregate device → IOProc → WAV.
+/// Global, not per-app: user never has interfering audio, and it covers Zoom/browser/anything.
 /// Permission ("System Audio Recording Only") prompts on first tap; denial = silent buffers, no error.
 final class SystemAudioTap {
     private var tapID = unknownObject
@@ -11,11 +12,9 @@ final class SystemAudioTap {
     private let queue = DispatchQueue(label: "pa.system-tap", qos: .userInitiated)
     private(set) var writer: WavWriter?
 
-    /// `processes` = Core Audio process object ids; empty + `global` = everything except `excluding`.
-    func start(processes: [AudioObjectID], global: Bool, excluding: [AudioObjectID], writingTo url: URL) throws {
-        let desc = global
-            ? CATapDescription(stereoGlobalTapButExcludeProcesses: excluding)
-            : CATapDescription(stereoMixdownOfProcesses: processes)
+    func start(writingTo url: URL) throws {
+        // No exclusions: pa plays no audio itself.
+        let desc = CATapDescription(stereoGlobalTapButExcludeProcesses: [])
         desc.uuid = UUID()
         desc.name = "pa test-capture"
         desc.isPrivate = true

@@ -9,13 +9,9 @@ public enum Command: Equatable, Sendable {
 
 public struct TestCaptureOptions: Equatable, Sendable {
     public var seconds: Int = 30
-    /// Bundle-id prefixes whose audio to tap; ignored when `global`.
-    public var apps: [String] = ["us.zoom"]
-    public var global = false
     /// Per-stream switches: isolate which stream/setting breaks capture.
     public var mic = true
     public var system = true
-    public var voiceProcessing = true
     /// nil = ~/pa-test-capture (cwd is / under `open`; ~/Desktop would add a TCC prompt).
     public var outDir: String? = nil
 
@@ -29,10 +25,8 @@ public struct UsageError: Error, Equatable, CustomStringConvertible {
 
 public let usage = """
     usage:
-      pa test-capture [--seconds N] [--app BUNDLE_PREFIX]... [--global] [--out DIR]
-                      [--no-mic] [--no-system] [--no-vp]
-          Record system audio (process tap) + mic to two WAVs. Default: 30s, --app us.zoom,
-          --out ~/pa-test-capture. --no-vp = mic without voice processing (echo cancellation).
+      pa test-capture [--seconds N] [--out DIR] [--no-mic] [--no-system]
+          Record all system audio (global tap) + mic to two WAVs. Default: 30s, --out ~/pa-test-capture.
       pa mics
           List input devices: UID<TAB>name<TAB>flags (default,selected). Interactive: osx/pick-mic.sh.
       pa set-mic (UID | --default)
@@ -47,18 +41,12 @@ public func parseCommand(_ args: [String]) throws(UsageError) -> Command {
         return .help
     case "test-capture":
         var o = TestCaptureOptions()
-        var explicitApps: [String] = []
         var it = args.dropFirst().makeIterator()
         while let flag = it.next() {
             switch flag {
             case "--seconds":
                 guard let v = it.next(), let n = Int(v), n > 0 else { throw UsageError("--seconds needs a positive integer") }
                 o.seconds = n
-            case "--app":
-                guard let v = it.next(), !v.isEmpty else { throw UsageError("--app needs a bundle id prefix") }
-                explicitApps.append(v)
-            case "--global":
-                o.global = true
             case "--out":
                 guard let v = it.next(), !v.isEmpty else { throw UsageError("--out needs a directory") }
                 o.outDir = v
@@ -66,14 +54,10 @@ public func parseCommand(_ args: [String]) throws(UsageError) -> Command {
                 o.mic = false
             case "--no-system":
                 o.system = false
-            case "--no-vp":
-                o.voiceProcessing = false
             default:
                 throw UsageError("unknown flag \(flag)")
             }
         }
-        if !explicitApps.isEmpty { o.apps = explicitApps }
-        if o.global && !explicitApps.isEmpty { throw UsageError("--global and --app are mutually exclusive") }
         if !o.mic && !o.system { throw UsageError("--no-mic and --no-system leave nothing to record") }
         return .testCapture(o)
     case "mics":

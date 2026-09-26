@@ -40,7 +40,7 @@ The repo has a few components:
 ## Project state
 - Server scaffold (settled): config loading/validation, `GET /api/health`, static/Vite serving, systemd scripts.
 - Server (built): SQLite store, web auth, device pairing + approval, transcript ingest/list/detail, minimal web UI.
-- osx: `pa test-capture` spike + `build.sh` written, **not yet compiled/run on the Mac**.
+- osx: `pa test-capture` spike runs on the Mac; Zoom tap + mic (no VP) record (verified live).
 - Everything else below = planned, not built.
 - Default port **4200** (4000/4100 taken on the dev box by other services).
 - Monorepo: `server/` (Node backend), `web/` (React frontend), `shared/` (TS wire types), `osx/` (headless Swift CLI).
@@ -49,8 +49,8 @@ The repo has a few components:
 
 ## Roadmap (next up, in order)
 - Order = riskiest unknowns first, then thinnest end-to-end slice (Mac audio → server transcript), then value-add. Tick off / reorder as done.
-1. **osx: run `pa test-capture` on the Mac** — compile, sign, verify TCC prompts + non-silent tap/mic WAVs (Zoom, browser, global). Record findings "verified live".
-2. **osx: transcription spike** — FluidAudio Parakeet v3 + diarization on spike WAVs → `[{start,end,speaker,text}]`; check speed/accuracy, mic-echo dedup. Behind `Transcriber` protocol.
+1. **osx: finish `pa test-capture` on the Mac** — Zoom tap + mic done (verified live); still: global tap (now the only mode) live run, listen to WAVs. Record findings "verified live".
+2. **osx: transcription spike** — FluidAudio Parakeet v3 + diarization on spike WAVs → `[{start,end,speaker,text}]`; check speed/accuracy. Behind `Transcriber` protocol.
 3. **osx: `pa pair` / `pa status`** — Keychain token, app-support `config.json`, poll `/api/device/me`; Swift `Codable` mirrors of `shared/api.ts` + fixture decode tests.
 4. **osx: `pa upload <wav-dir>`** — manual transcribe + upload → first real end-to-end transcript on server.
 5. **server: LLM client + job queue** — `server/llm.ts` (chat/embeddings, `/models` health), SQLite jobs w/ backoff, fail-safe (queued, never lost).
@@ -143,7 +143,7 @@ The repo has a few components:
 - **Headless — no UI.** Swift 6 CLI `pa`; runs as a background process. Swift because audio taps, EventKit, CoreML ASR are native-only.
 - Min **macOS 26**, Apple Silicon only (arm64).
 - **Toolchain: Command Line Tools only** (`xcode-select --install`); no Xcode project/IDE. SwiftPM package in `osx/` (`Package.swift`).
-- Targets: `PACore` (pure: arg parsing, tap target selection, level meter; unit-tested) ⟂ `pa` (thin Core Audio/AVFoundation wrappers; tested by running on the Mac).
+- Targets: `PACore` (pure: arg parsing, level meter; unit-tested) ⟂ `pa` (thin Core Audio/AVFoundation wrappers; tested by running on the Mac).
 - Bundle id **`com.bitofant.pa`**; default signing identity name `PA Local Signing`.
 - No swift-argument-parser: too few flags.
 - **Minimal `.app` bundle, still headless** — why: TCC (mic/system audio/calendar) grants attach to a signed bundle id + `Info.plist` usage strings; bare binaries under launchd get flaky/misattributed prompts.
@@ -155,23 +155,21 @@ The repo has a few components:
 - **CLI subcommands:** `pa pair <server> <account>` (prompts, shows pairing code), `pa status`, `pa run` (daemon mode), `pa test-capture` (spike, below), `pa mics` / `pa set-mic (UID|--default)` (built).
 - **Mic selection (built, device switch not verified live):** persisted as Core Audio device **UID** (stable; object ids aren't) in app-support `config.json` `micDeviceUID`; nil/unplugged → system default.
   - `pa mics` = TSV `uid\tname\tflags` (pure `formatMicLine`), parsed by bash-3.2 `osx/pick-mic.sh`. Bare binary OK: enumeration needs no TCC.
-  - Applied via `kAudioOutputUnitProperty_CurrentDevice` on inputNode's unit before + after enabling VP; device read back and printed (ground truth). Unverified whether VP honors it.
+  - Applied via `kAudioOutputUnitProperty_CurrentDevice` on inputNode's unit; device read back and printed (ground truth).
 - **Autostart:** LaunchAgent `~/Library/LaunchAgents/<bundle id>.plist` (`RunAtLoad`, `KeepAlive`) running `PA.app/Contents/MacOS/pa run`; installed by `osx/install.sh`. **First run manually** so TCC prompts appear.
 - **Calendar:** EventKit (reads whatever accounts macOS Calendar syncs: Exchange/Google/iCloud). Config picks which calendars are "work". No direct Graph/Google API.
 - **Audio capture — two streams, kept separate** (no BlackHole/virtual driver):
-  - Mic: `AVAudioEngine`, **voice processing on** (`setVoiceProcessingEnabled`) for echo cancellation.
+  - **Headphones assumed → no echo handling at all** (user decision). Mic: plain `AVAudioEngine`, **no voice processing** — VP mic = all zeros on every live run, even without a tap (verified live); VP code removed, don't re-add.
   - System audio: Core Audio **process taps** (`AudioHardwareCreateProcessTap`, macOS 14.2+). Permission = "System Audio Recording Only" (not Screen Recording); no public API to pre-check — prompt fires on first tap.
-  - Tap scope: meeting-app processes (Zoom). Browser meetings: audio comes from browser helper processes → tap whole browser; global tap as fallback (picks up notification sounds/music).
-  - Mic = local user (free speaker ID). ⚠️ On laptop speakers, mic also hears remotes → duplicate text attributed to me; AEC + dropping mic segments that duplicate system-stream text.
-  - Status: **not verified live yet.** `pa test-capture [--seconds N] [--app PREFIX]... [--global] [--out DIR] [--no-mic] [--no-system] [--no-vp]`: tap + mic → two WAVs in `~/pa-test-capture/` (not ~/Desktop: extra TCC prompt) + per-second progress + peak/RMS + callback stats.
-  - First live run (Zoom settings dialog, test sound): tap got only 0.5s of 30s; VP mic = all zeros though permission granted. Suspect VP (reconfigures output device, ducks other audio). Mic now starts before tap, ducking min; bisect with `--no-vp`/`--no-mic`/`--no-system`. Unresolved.
+  - **Tap scope: always global** (user decision: no interfering audio ever plays). No per-app targeting/bundle-id matching; covers Zoom/browser/anything. No self-exclusion (pa plays nothing).
+  - Mic = local user (free speaker ID).
+  - Status: **Zoom-only tap + mic verified live**; global tap not yet. `pa test-capture [--seconds N] [--out DIR] [--no-mic] [--no-system]`: tap + mic → two WAVs in `~/pa-test-capture/` (not ~/Desktop: extra TCC prompt) + per-second progress + peak/RMS + callback stats.
+  - First live run (Zoom settings dialog, test sound, VP on): tap got only 0.5s of 30s; not reproduced since.
   - Second live run (Zoom, QuadCast S mic, External Headphones): tap IOProc delivered **2 buffers/callback** for a 2 ch interleaved tap → `AVAudioPCMBuffer(bufferListNoCopy:)` failed every callback (verified live). Now copy the last matching buffer / interleave mono buffers; stats print buffer layout + per-buffer peak. Don't go back to assuming 1 buffer.
-  - Creating the tap aggregate fires `AVAudioEngineConfigurationChange` on the VP mic engine → engine stops (verified live) → now restarted in the observer.
-  - VP mic format on MacBook Pro Microphone = 48 kHz, **5 ch** non-interleaved (verified live). ⚠️ Touching `engine.mainMixerNode` with VP on → `engine.start` fails -10875 (verified live); don't re-add.
-  - Third live run (Zoom, QuadCast S, External Headphones): tap OK (-3 dBFS); VP mic still **all zeros** though callbacks flow (verified live) → VP-specific, not device-specific. Bisecting: pre-tap level, VP bypassed/muted flags, per-channel peaks. Unresolved.
+  - Creating the tap aggregate fires `AVAudioEngineConfigurationChange` on the mic engine → engine stops (verified live) → now restarted in the observer.
+  - Third live run (Zoom, QuadCast S, External Headphones, no VP): tap + mic both record (verified live).
   - Aggregate clocked by default **output** device (where meeting plays), not the system/alert-sound device.
-  - Tap = `CATapDescription` (mixdown of process objects, `muteBehavior=.unmuted`, private) → private aggregate device (default output as main sub-device, tap auto-start) → IOProc block → `AVAudioFile`.
-  - Targets by **bundle-id prefix with `.` boundary** over `kAudioHardwarePropertyProcessObjectList` (catches helpers, e.g. `com.google.Chrome.helper`).
+  - Tap = `CATapDescription` (global, no exclusions, `muteBehavior=.unmuted`, private) → private aggregate device (default output as main sub-device, tap auto-start) → IOProc block → `AVAudioFile`.
   - Denied system-audio permission = **silent buffers, no error** → summary flags all-zero streams. Don't drop this check.
 - **Meeting detection:** calendar event window AND (mic in use via `kAudioDevicePropertyDeviceIsRunningSomewhere` OR meeting app running: Zoom/Teams/Webex/browser Meet). Ad-hoc calls without event still recorded (no calendar meta).
 - **Transcription:** on-device, behind a `Transcriber` protocol.

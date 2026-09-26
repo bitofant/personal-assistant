@@ -22,7 +22,7 @@ final class WavWriter: @unchecked Sendable {
         var layout: String?
         /// Peak per buffer index across all IOProc callbacks (Float32 only).
         var bufferPeaks: [Float] = []
-        /// Peak per channel of non-interleaved buffers; VP mic = 5 ch, shows which carry signal.
+        /// Peak per channel of non-interleaved buffers: shows which mic channels carry signal.
         var channelPeaks: [Float] = []
         var description: String {
             let fmt = { (ps: [Float]) in ps.map { dbfs($0).map { String(format: "%.1f", $0) } ?? "—" }.joined(separator: ", ") }

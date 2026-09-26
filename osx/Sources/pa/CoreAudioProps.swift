@@ -55,16 +55,6 @@ func readString(_ obj: AudioObjectID, _ sel: AudioObjectPropertySelector) throws
     return value.map { $0.takeRetainedValue() as String }
 }
 
-/// Processes registered with the audio system (not all running processes).
-func listAudioProcesses() throws -> [AudioProcess] {
-    let ids = try readArray(systemObject, kAudioHardwarePropertyProcessObjectList, zero: AudioObjectID(0))
-    return ids.map { id in
-        let pid = (try? readScalar(id, kAudioProcessPropertyPID, initial: pid_t(-1))) ?? -1
-        let bundle: String? = try? readString(id, kAudioProcessPropertyBundleID)
-        return AudioProcess(objectID: id, pid: pid, bundleID: bundle?.isEmpty == false ? bundle : nil)
-    }
-}
-
 /// `sel` = kAudioHardwarePropertyDefault{Output,SystemOutput,Input}Device.
 func defaultDevice(_ sel: AudioObjectPropertySelector) throws -> AudioObjectID {
     try readScalar(systemObject, sel, initial: AudioObjectID(0))
