@@ -45,7 +45,8 @@ CHAT_MODEL="$(ask "  Chat model (summaries/search)" "")"
 EMBED_MODEL="$(ask "  Embedding model" "")"
 PROVIDERS="{ \"id\": \"local\", \"baseUrl\": $(json_str "$LOCAL_URL"), \"apiKey\": null, \"models\": $(json_list "$CHAT_MODEL,$EMBED_MODEL") }"
 
-# Paid providers are listed but not routed; opt in per task by editing llm.tasks.
+# Paid providers are never the default; optionally offered as a user-selectable summary model.
+SUMMARY_ALTS=""
 while [ "$(ask_yn "Add a paid provider (openai/openrouter/baseten…)?" n)" = true ]; do
   PID="$(ask "  Provider id" "openrouter")"
   PURL="$(ask "  Base URL" "https://openrouter.ai/api/v1")"
@@ -53,11 +54,16 @@ while [ "$(ask_yn "Add a paid provider (openai/openrouter/baseten…)?" n)" = tr
   PMODELS="$(ask "  Models (comma-separated)" "")"
   PROVIDERS="$PROVIDERS,
       { \"id\": $(json_str "$PID"), \"baseUrl\": $(json_str "$PURL"), \"apiKey\": $(json_str "$PKEY"), \"models\": $(json_list "$PMODELS") }"
+  PFIRST="$(printf '%s' "${PMODELS%%,*}" | sed 's/^ *//;s/ *$//')"
+  if [ -n "$PFIRST" ] && [ "$(ask_yn "  Let users pick $PID/$PFIRST for summaries?" y)" = true ]; then
+    SUMMARY_ALTS="$SUMMARY_ALTS, { \"provider\": $(json_str "$PID"), \"model\": $(json_str "$PFIRST") }"
+  fi
 done
 
 TASKS=""
 if [ -n "$CHAT_MODEL" ]; then
-  TASKS="\"summary\": { \"provider\": \"local\", \"model\": $(json_str "$CHAT_MODEL") },
+  # List = user-selectable models; first = default.
+  TASKS="\"summary\": [{ \"provider\": \"local\", \"model\": $(json_str "$CHAT_MODEL") }$SUMMARY_ALTS],
       \"search\": { \"provider\": \"local\", \"model\": $(json_str "$CHAT_MODEL") }"
 fi
 if [ -n "$EMBED_MODEL" ]; then

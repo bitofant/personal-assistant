@@ -1,4 +1,4 @@
-import type { LlmTaskStatus } from "../shared/api.js";
+import type { LlmChoice, LlmRouteRef, LlmTaskStatus } from "../shared/api.js";
 import type { Config, LlmProvider, LlmTask } from "./config.js";
 
 // OpenAI-compatible only (vLLM, llama.cpp, OpenAI, OpenRouter, …); no vendor branches past this file.
@@ -14,6 +14,8 @@ export interface ChatOptions {
   /** Ask for a JSON object (`response_format: json_object`); caller still validates. */
   json?: boolean;
   signal?: AbortSignal;
+  /** User's pick among the task's configured routes; unknown/null = default. */
+  route?: LlmRouteRef | null;
 }
 
 export interface ChatResult {
@@ -46,14 +48,27 @@ export interface Route {
   model: string;
 }
 
-/** Resolve task → provider/model. Unrouted = feature off → retryable, so jobs wait for it to be configured. */
-export function resolveRoute(config: Config, task: LlmTask): Route {
-  const r = config.llm.tasks[task];
-  if (!r) throw new LlmError(`LLM task "${task}" not configured (llm.tasks.${task}).`, true);
+/**
+ * Resolve task → provider/model. Unrouted = feature off → retryable, so jobs wait for it to be configured.
+ * `preferred` must be one of the task's configured routes (users can't point us at arbitrary models); else default.
+ */
+export function resolveRoute(config: Config, task: LlmTask, preferred?: LlmRouteRef | null): Route {
+  const routes = config.llm.tasks[task];
+  if (!routes?.length) throw new LlmError(`LLM task "${task}" not configured (llm.tasks.${task}).`, true);
+  const r = (preferred && routes.find((q) => sameRoute(q, preferred))) || routes[0];
   const provider = config.llm.providers.find((p) => p.id === r.provider);
   // parseConfig rejects this; guard anyway since config reloads live.
   if (!provider) throw new LlmError(`LLM provider "${r.provider}" not configured.`, true);
   return { provider, model: r.model };
+}
+
+export function sameRoute(a: LlmRouteRef, b: LlmRouteRef): boolean {
+  return a.provider === b.provider && a.model === b.model;
+}
+
+/** User-selectable routes for a task; first = default. */
+export function routeChoices(config: Config, task: LlmTask): LlmChoice[] {
+  return (config.llm.tasks[task] ?? []).map((r, i) => ({ provider: r.provider, model: r.model, isDefault: i === 0 }));
 }
 
 export function buildChatBody(model: string, messages: ChatMessage[], opts: ChatOptions = {}): Record<string, unknown> {
@@ -192,7 +207,7 @@ export function createLlm(opts: LlmOptions): Llm {
 
   return {
     async chat(task, messages, o = {}) {
-      const route = resolveRoute(opts.getConfig(), task);
+      const route = resolveRoute(opts.getConfig(), task, o.route);
       const raw = await call(route, "POST", "/chat/completions", buildChatBody(route.model, messages, o), chatTimeout, o.signal);
       return parseChatResponse(raw, route.provider.id, route.model);
     },

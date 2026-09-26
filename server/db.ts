@@ -116,6 +116,21 @@ export const USER_MIGRATIONS = [
     created_at INTEGER NOT NULL
   );
   `,
+  // Custom summary instructions (resolution: series > type > default > built-in) + per-user settings.
+  `
+  CREATE TABLE instructions (
+    scope TEXT NOT NULL CHECK (scope IN ('default', 'type', 'series')),
+    key TEXT NOT NULL,
+    text TEXT NOT NULL,
+    updated_at INTEGER NOT NULL,
+    PRIMARY KEY (scope, key)
+  );
+  CREATE TABLE settings (
+    key TEXT PRIMARY KEY,
+    value TEXT NOT NULL
+  );
+  ALTER TABLE summaries ADD COLUMN meeting_type_source TEXT;
+  `,
 ] as const;
 
 /** Opens data/app.db and lazily caches data/users/<id>.db handles. */

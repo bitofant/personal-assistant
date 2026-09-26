@@ -39,7 +39,7 @@ The repo has a few components:
 
 ## Project state
 - Server scaffold (settled): config loading/validation, `GET /api/health`, static/Vite serving, systemd scripts.
-- Server (built): SQLite store, web auth, device pairing + approval, transcript ingest/list/detail, minimal web UI, LLM client + job queue, summaries (+ web view with job status).
+- Server (built): SQLite store, web auth, device pairing + approval, transcript ingest/list/detail, minimal web UI, LLM client + job queue, summaries (+ web view with job status), custom instructions + LLM meeting-type classify + per-user summary model (settings page).
 - osx: `pa test-capture` spike runs on the Mac; Zoom tap + mic (no VP) record (verified live).
 - Everything else below = planned, not built.
 - Default port **4200** (4000/4100 taken on the dev box by other services).
@@ -54,7 +54,7 @@ The repo has a few components:
 3. **osx: `pa pair` / `pa status`** — Keychain token, app-support `config.json`, poll `/api/device/me`; Swift `Codable` mirrors of `shared/api.ts` + fixture decode tests.
 4. **osx: `pa upload <wav-dir>`** — manual transcribe + upload → first real end-to-end transcript on server.
 5. ~~**server: LLM client + job queue**~~ — done (see Server design → LLM / Background jobs).
-6. **server: summaries** — built: summarize job on upload, 1on1 rule, built-in per-type instructions, stored model/instructions, stale flag, re-summarize API, web summary panel. Left: custom instructions (series > type > default; table + API + web UI), LLM classify fallback, long-transcript chunking (map-reduce) if context overflows.
+6. **server: summaries** — built: summarize job, rule + LLM classify, built-in + custom instructions (series > type > default), per-user model pick, settings page. Left: long-transcript chunking (map-reduce) if context overflows; maybe "instructions changed" stale flag; reuse series' type instead of re-classifying.
 7. **server: search v1** — FTS5 over segments/titles/attendees; web search page. Then v2: chunk+embed w/ `sqlite-vec`, hybrid merge, optional RAG answer.
 8. **osx: daemon (`pa run`)** — EventKit work calendars, meeting detection, auto capture → transcribe → persistent upload queue, raw-audio retention; `osx/install.sh` LaunchAgent; `os.Logger` + log file.
 9. **Speaker naming** — label speakers in web UI, per-user voice embeddings, match vs attendees; LLM name proposals never overwrite user labels.
@@ -103,6 +103,7 @@ The repo has a few components:
 - Markdown rendering (built): `shared/markdown.ts` `renderMarkdown` = the only Markdown→HTML path. LLM output is untrusted (speech can prompt-inject): raw HTML escaped, links only http(s)/mailto (`target=_blank rel=noopener`), images → alt text (no remote loads). Don't loosen.
 
 - **Config (settled):** `server/config.ts` `parseConfig` (pure, tested) validates + normalizes (usernames lowercased/trimmed, baseUrl trailing `/` stripped, empty apiKey → `null`); `loadConfig` = thin file wrapper. Unrouted `llm.tasks.X` = feature off, not an error. Task → unknown provider = startup error.
+  - `llm.tasks.X` = route or list of routes → always normalized to non-empty `LlmRoute[]`; first = default, rest = user-selectable (summary). Duplicate route = error.
 - **Static serving:** `resolveStaticPath` must stay `startsWith(root + sep)` (bare `startsWith(root)` lets `dist/web.prev` through); traversal → SPA fallback, never a file outside root.
 - **Toolchain versions:** TypeScript 7 (native `tsc`), Vite 8, React 19, Vitest 4, Node 25 on dev box.
 
@@ -136,6 +137,7 @@ The repo has a few components:
   - `config.json` `llm.providers[]` `{id, baseUrl, apiKey?, models[]}`; default = local vLLM/llama.cpp (free). Per-task routing `llm.tasks {summary, search, embed}`; paid providers opt-in per task.
   - Pure parsers (`parseChatResponse`, `parseEmbeddingsResponse`, `errorMessage`, …) unit-tested with fake fetch; `llm.e2e.test.ts` = fake provider down→503→up (never skips) + live local LLM (config.json route, else probes `localhost:8000/v1`; self-skips).
   - `LlmError.retryable`: network/timeout/408/409/429/5xx/non-JSON reply/**unrouted task** = true (outage → job waits); other 4xx / malformed reply = false.
+  - Route choice: `chat(task, msgs, {route})`; `resolveRoute` honors `route` only if it's in `llm.tasks[task]` (else default) → users can't aim at arbitrary models/paid keys. Don't loosen. `routeChoices` = list for UI; health reports the default route.
   - Strips leading `<think>…</think>` (reasoning models). Embeddings batched (64), reordered by `index`.
   - Health: `GET /api/llm/status` (session) → per task `{ok, provider, model, modelListed, error}`; model missing from `/models` = not ok (common misconfig).
   - vLLM reply/error shapes verified live (`{error:{message}}`, FastAPI `{detail}`); vLLM on dev box has no embedding model → embed live test skips.
@@ -145,12 +147,18 @@ The repo has a few components:
   - Dedupe on `(user_id, type, key)`: re-enqueue revives row (new payload, counters reset, `generation+1`). Settle only `WHERE generation = claimed AND status='running'` → re-upload mid-run re-runs, never lost. Don't drop the guard.
   - Retries: exponential backoff (30s→1h cap, no jitter). `isRetryable` duck-typed (`err.retryable === true`) so queue never imports LLM code. Outages never count toward `maxFailures` (5) → never `failed`; `failed` row kept, re-enqueue revives.
   - Crash: `recover()` at start requeues `running`. Shutdown: `app.close()` is async, aborts handler signal, `release()`s job (attempt not counted) before DB close.
-- **Summaries (built, partial):** `server/summaries.ts`; job `summarize`, key = transcript id, payload null.
-  - Enqueued on upload if content `changed` or never queued (backfill); `POST /api/transcripts/:id/summarize` (body `{}`, JSON content-type = CSRF guard) forces re-run → 202 `{summaryJob}`.
+- **Summaries (built):** `server/summaries.ts`; job `summarize`, key = transcript id, payload `{llm}` (one-off model pick) or null.
+  - Enqueued on upload (payload null) if content `changed` or never queued (backfill); `POST /api/transcripts/:id/summarize` (body `{llm?}`, JSON content-type = CSRF guard) forces re-run → 202 `{summaryJob}`; `llm` not in choices → 400.
+  - Model: payload pick > user setting (`settings` table, `summaryLlm`) > default. Stored pick dropped from config → treated as default (`effectiveChoice`), not an error. Classify uses the same route.
   - `GET /api/transcripts/:id` adds `summary` (`stale` = transcript changed since) + `summaryJob` (`JobState`). `GET /api/transcripts/:id/summary` = same two fields without segments (UI poll target; don't poll the full detail).
   - Web `SummaryPanel`: pure `web/summaryState.ts` `summaryStatusView(job, hasSummary)` → message/tone/poll/button (unit-tested); polls 2s while queued/running, 15s while waiting out a backoff (queued + `lastError`), stops on done/failed. Button: Summarize / Re-summarize / Retry, disabled in progress.
   - UI states verified live in headless Chromium (done, generating, LLM down → waiting → auto-recovered ~30s); `failed` + never-queued only unit-tested.
-  - Meeting type by rule: no event = `adhoc`, 2 attendees = `1on1`, else `meeting`. Instructions: built-in per type (`builtin:<type>`); planned custom resolution series > type > default, LLM classify fallback.
+  - Types + descriptions + built-ins + `resolveInstructions` live in `shared/instructions.ts` (UI + server share them). Types: `1on1 standup interview external meeting adhoc`.
+  - `classifyByRule`: no event = `adhoc`; title keywords (1:1, standup/daily/scrum, interview minus debrief/prep) **before** attendee count (2-person interview ≠ 1on1); 2 attendees = `1on1`; else null → LLM (`classifyMeeting`, bare type-id reply, never picks `adhoc`). Unparseable reply / non-retryable error → `meeting` + source `fallback`; retryable → throw (job waits). Stored `meeting_type_source` rule/llm/fallback (null on old rows).
+  - Instructions: series > type > custom default > `builtin:<type>`; each **replaces** lower levels (custom default hides built-in per-type texts — intended). Common rules always prepended. Source strings `series:<id>` / `type:<t>` / `default` / `builtin:<t>`.
+  - Custom instructions: per-user `instructions (scope, key)` table; `GET /api/instructions` (custom + `series` seen in transcripts); `PUT|DELETE /api/instructions/default | /type/:type | /series/:seriesId` (URL-encoded id, case kept, trimmed; text ≤20k; DELETE idempotent). Editing doesn't mark summaries stale (re-summarize manually).
+  - Settings: `GET|PUT /api/settings` `{summaryLlm, summaryLlmChoices}`; web `#/settings` (`web/Settings.tsx`) + model `<select>` in `SummaryPanel`.
+  - Classify verified live on gemma (external / meeting cases); settings page + series instructions + remote pick verified live in headless Chromium.
   - Prompt: system = common rules (transcript language, Markdown, no invention, ASR caveats) + instructions; user = metadata + `[m:ss] Speaker: text` (same-speaker runs merged). No `max_tokens`; `finish_reason=length` / empty = non-retryable error.
   - Stored in per-user `summaries` (one row per transcript): text, type, instructions source + text, provider/model, token usage (null if unknown), `transcript_updated_at`.
   - Handler: missing transcript = done (no-op); LLM outage/unrouted `summary` task = retryable → job waits.

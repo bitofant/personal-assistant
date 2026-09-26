@@ -233,3 +233,39 @@ describe.skipIf(!chatUp)("live local LLM: summarize job", () => {
     }
   });
 });
+
+describe.skipIf(!chatUp)("live local LLM: meeting classification", () => {
+  it("ambiguous meetings get a parseable type from the LLM (not the fallback)", async () => {
+    const { readFileSync } = await import("node:fs");
+    const { classifyByRule, classifyMeeting } = await import("./summaries.js");
+    const { parseTranscriptUpload } = await import("./transcripts.js");
+    const base = JSON.parse(readFileSync("shared/fixtures/transcript-upload.json", "utf8"));
+    const cases = [
+      {
+        expect: "external",
+        title: "Acme Corp x Initech: renewal",
+        attendees: ["me@initech.com", "pm@initech.com", "buyer@acme.com", "cto@acme.com"],
+        lines: ["Thanks for having us. Our main concern with the renewal is the price increase.", "Understood, we can offer a discount if you sign for two years."],
+      },
+      {
+        expect: "meeting",
+        title: "Q4 planning",
+        attendees: ["a@initech.com", "b@initech.com", "c@initech.com", "d@initech.com"],
+        lines: ["Let's go through the roadmap items for Q4 and decide priorities.", "I think the billing migration has to come first."],
+      },
+    ];
+    for (const c of cases) {
+      const t = parseTranscriptUpload({
+        ...base,
+        meeting: { ...base.meeting, title: c.title, attendees: c.attendees.map((email) => ({ name: null, email })) },
+        segments: c.lines.map((text, i) => ({ start: i * 10, end: i * 10 + 9, speaker: `Speaker ${(i % 2) + 1}`, text })),
+      });
+      expect(classifyByRule(t)).toBeNull();
+      const r = await classifyMeeting(t, liveLlm!);
+      // Hard gate: reply was parseable. Which type = model quality, soft.
+      expect(r.source).toBe("llm");
+      if (r.type !== c.expect) console.warn(`live classify "${c.title}": expected ${c.expect}, got ${r.type}`);
+      else console.log(`live classify "${c.title}": ${r.type}`);
+    }
+  });
+});

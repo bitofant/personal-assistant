@@ -13,10 +13,11 @@ Status: early. The server supports:
 - transcript upload from a paired device
 - a web UI to browse transcripts
 - LLM summaries of uploaded transcripts, made in a background job queue and shown on the transcript page (with progress, retry-after-outage and failure status, and a re-summarize button); `GET /api/llm/status` shows whether each LLM task is reachable. Jobs of disabled users wait until they're re-enabled.
+- summary settings page: pick the summary model (e.g. local or a paid remote one, from those the admin configured) and write custom instructions per recurring series, per meeting type, or as your default. The most specific ones win. The meeting type (1:1, stand-up, interview, external, meeting, ad-hoc) comes from the calendar event: no event means ad-hoc, title keywords decide next, and 2 attendees means 1:1. When those rules can't tell, the LLM classifies the meeting.
 
 Search isn't built yet. See `AGENTS.md` for the design and roadmap.
 
-Data lives in `data/` (gitignored): `app.db` holds accounts, sessions, devices and the job queue, and `users/<id>.db` holds one user's transcripts.
+Data lives in `data/` (gitignored): `app.db` holds accounts, sessions, devices and the job queue, and `users/<id>.db` holds one user's transcripts, summaries, custom instructions and settings.
 
 ## Server setup (Linux)
 
@@ -33,6 +34,7 @@ All configuration is in `config.json`. There are no env vars.
 - `users`: usernames allowed to log in. Anyone can register, but an account is disabled until it's listed here. The server reloads `config.json` automatically, so you don't need to restart it. Removing a username logs that user out right away and blocks their devices.
 - `llm.providers`: OpenAI-compatible endpoints (local vLLM/llama.cpp, OpenRouter, …).
 - `llm.tasks`: routes `summary` / `search` / `embed` to a provider+model. If a task isn't routed, that feature is off. Jobs that need it wait in the queue until you route it.
+  - A task can also take a list of routes. The first is the default. For `summary`, each user can pick any listed route in the web UI, e.g. `[{local}, {openrouter}]` to offer a paid remote model. Users can only pick routes you list here.
 
 ### Production (systemd user service)
 
