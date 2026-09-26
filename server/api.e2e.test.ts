@@ -347,6 +347,97 @@ describe("API flow", () => {
     }
   });
 
+  describe("`pa transcribe` uploads (shared/fixtures/transcript-upload-pa.json)", () => {
+    const paUpload = JSON.parse(readFileSync("shared/fixtures/transcript-upload-pa.json", "utf8"));
+    const WINDOW = 12000;
+    // vLLM's overflow reply, verbatim shape (verified live on gemma-4-31B).
+    const overflow = (n: number) => ({
+      error: { message: `This model's maximum context length is ${WINDOW} tokens. However, your prompt contains at least ${n} input tokens.`, type: "BadRequestError", param: "input_tokens", code: 400 },
+    });
+    let prompts: { kind: string; chars: number; ok: boolean }[] = [];
+    let llm: Server;
+
+    beforeAll(async () => {
+      // Fake OpenAI-compatible model with a real window (~3 chars/token, like our estimate).
+      llm = createServer((req, res) => {
+        let body = "";
+        req.on("data", (c) => (body += c));
+        req.on("end", () => {
+          const messages = (JSON.parse(body) as { messages: { content: string }[] }).messages;
+          const sys = messages[0].content;
+          const chars = messages.map((m) => m.content).join("\n").length;
+          const kind = sys.startsWith("You classify") ? "classify" : sys.startsWith("You take notes") ? "part" : sys.startsWith("You merge") ? "merge" : messages[1].content.includes("Notes per part") ? "combine" : "single";
+          const ok = chars / 3 <= WINDOW;
+          prompts.push({ kind, chars, ok });
+          res.setHeader("content-type", "application/json");
+          if (!ok) {
+            res.statusCode = 400;
+            res.end(JSON.stringify(overflow(Math.ceil(chars / 3))));
+            return;
+          }
+          const content = kind === "part" ? "- [0:00] migration plan discussed" : `## ${kind} summary`;
+          res.end(JSON.stringify({ model: "fake", choices: [{ message: { content }, finish_reason: "stop" }], usage: { prompt_tokens: Math.ceil(chars / 3), completion_tokens: 5 } }));
+        });
+      });
+      await new Promise<void>((r) => llm.listen(0, "127.0.0.1", r));
+      // No contextTokens: window unknown → one call, chunk only after an overflow reply.
+      config = parseConfig({
+        users: ["alice"],
+        llm: { providers: [{ id: "fake", baseUrl: `http://127.0.0.1:${(llm.address() as AddressInfo).port}/v1` }], tasks: { summary: { provider: "fake", model: "fake" } } },
+      });
+    });
+    afterAll(async () => {
+      config = parseConfig({ users: ["alice"] });
+      await new Promise((r) => llm.close(r));
+    });
+
+    const summaryDone = async (id: string) => {
+      let d!: TranscriptDetail;
+      await waitFor(async () => {
+        d = (await (await fetch(`${base}/api/transcripts/${id}`, { headers: { cookie } })).json()) as TranscriptDetail;
+        return d.summaryJob?.status === "done" || d.summaryJob?.status === "failed";
+      }, 15000);
+      return d;
+    };
+
+    it("short call: stored as ad-hoc with speakers kept, summarized in one call, searchable", async () => {
+      prompts = [];
+      const r = await post("/api/device/transcripts", paUpload, bearer);
+      expect(r.status).toBe(201);
+      const d = await summaryDone(paUpload.id);
+      expect(d.meeting).toBeNull();
+      expect(d.segments.map((s) => s.speaker)).toEqual(["Alice Example", "Speaker 1", "Speaker 2", "Alice Example", null]);
+      // "default": the custom default instruction saved by an earlier test beats built-in adhoc.
+      expect(d.summary).toMatchObject({ text: "## single summary", meetingType: "adhoc", meetingTypeSource: "rule", instructionsSource: "default", parts: 1 });
+      expect(prompts.map((p) => p.kind)).toEqual(["single"]); // adhoc by rule: no classify call
+      const s = (await (await fetch(`${base}/api/search?q=migration`, { headers: { cookie } })).json()) as SearchResponse;
+      expect(s.results.map((x) => x.transcript.id)).toContain(paUpload.id);
+      const nl = (await (await fetch(`${base}/api/search?q=notulen`, { headers: { cookie } })).json()) as SearchResponse;
+      expect(nl.results.map((x) => x.transcript.id)).toEqual([paUpload.id]);
+    });
+
+    it("long meeting (~3h) on a model with an unknown, too-small window → overflow → summarized in parts", async () => {
+      prompts = [];
+      // Fixture's lines repeated for ~3h, as pa would send a long recording.
+      const segments = Array.from({ length: 1100 }, (_, i) => {
+        const s = paUpload.segments[i % paUpload.segments.length];
+        return { ...s, start: i * 10 + (s.start % 10), end: i * 10 + (s.start % 10) + 5 };
+      });
+      const long = { ...paUpload, id: "5b1d7c3e-9a2f-4e6b-8c0d-1f2e3a4b5c6d", endedAt: "2026-09-24T10:03:00Z", segments };
+      expect((await post("/api/device/transcripts", long, bearer)).status).toBe(201);
+      const d = await summaryDone(long.id);
+      expect(d.summaryJob).toMatchObject({ status: "done", lastError: null });
+      expect(d.summary).toMatchObject({ text: "## combine summary", meetingType: "adhoc" });
+      expect(d.summary!.parts).toBeGreaterThan(2);
+      const kinds = prompts.map((p) => p.kind);
+      expect(kinds[0]).toBe("single");
+      expect(prompts[0].ok).toBe(false); // real overflow reply from the "server" …
+      expect(kinds.at(-1)).toBe("combine"); // … turned into parts + one combine
+      expect(prompts.filter((p) => p.kind === "part" && p.ok).length).toBeGreaterThanOrEqual(d.summary!.parts!);
+      expect(prompts.filter((p) => p.ok).every((p) => p.kind === "part" || p.kind === "combine")).toBe(true);
+    });
+  });
+
   it("disabling the user in config cuts off both web session and device", async () => {
     config = parseConfig({ users: [] });
     expect((await fetch(`${base}/api/auth/me`, { headers: { cookie } })).status).toBe(401);

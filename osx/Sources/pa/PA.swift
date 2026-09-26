@@ -20,6 +20,8 @@ struct PA {
                 try await status()
             case .upload(let path):
                 try await upload(path)
+            case .transcribe(let options):
+                try await transcribe(options)
             }
         } catch let e as UsageError {
             eprint("\(e)\n\n\(usage)")

@@ -80,6 +80,19 @@ public struct TranscriptUpload: Codable, Equatable, Sendable {
     public var segments: [TranscriptSegment]
     public var asrModel: String
     public var diarizationModel: String?
+
+    public init(
+        id: String, startedAt: String, endedAt: String, meeting: MeetingMeta?,
+        segments: [TranscriptSegment], asrModel: String, diarizationModel: String?
+    ) {
+        self.id = id
+        self.startedAt = startedAt
+        self.endedAt = endedAt
+        self.meeting = meeting
+        self.segments = segments
+        self.asrModel = asrModel
+        self.diarizationModel = diarizationModel
+    }
 }
 
 public struct TranscriptUploadResponse: Codable, Equatable, Sendable {

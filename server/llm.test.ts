@@ -5,6 +5,7 @@ import {
   buildChatBody,
   createLlm,
   errorMessage,
+  isContextOverflow,
   isRetryableStatus,
   LlmError,
   parseChatResponse,
@@ -152,6 +153,19 @@ describe("errors", () => {
     expect(errorMessage(500, "")).toBe("HTTP 500");
   });
 
+  it("context overflow per server wording; other 400s aren't", () => {
+    // vLLM body verified live (gemma-4-31B, 90k context).
+    const vllm = `{"error":{"message":"This model's maximum context length is 90000 tokens. However, you requested 5 output tokens and your prompt contains at least 89996 input tokens, for a total of at least 90001 tokens.","type":"BadRequestError","param":"input_tokens","code":400}}`;
+    const openai = `{"error":{"message":"This model's maximum context length is 128000 tokens. However, your messages resulted in 130000 tokens.","type":"invalid_request_error","code":"context_length_exceeded"}}`;
+    const llamacpp = `{"error":{"code":400,"message":"the request exceeds the available context size, try increasing it","type":"exceed_context_size_error"}}`;
+    const anthropic = `{"error":{"message":"prompt is too long: 250000 tokens > 200000 maximum","code":400}}`;
+    for (const body of [vllm, openai, llamacpp, anthropic]) expect(isContextOverflow(400, body)).toBe(true);
+    expect(isContextOverflow(413, "")).toBe(true);
+    expect(isContextOverflow(400, '{"error":{"message":"The model `nope` does not exist."}}')).toBe(false);
+    expect(isContextOverflow(400, '{"error":{"message":"temperature must be ≤ 2"}}')).toBe(false);
+    expect(isContextOverflow(500, vllm)).toBe(false);
+  });
+
   it("batches", () => {
     expect(batches([1, 2, 3, 4, 5], 2)).toEqual([[1, 2], [3, 4], [5]]);
     expect(batches([], 2)).toEqual([]);
@@ -222,6 +236,32 @@ describe("createLlm", () => {
       .catch((e) => e);
     expect(e3).toMatchObject({ retryable: false, status: 400 });
     expect(e3.message).toMatch(/HTTP 400: bad/);
+  });
+
+  it("context overflow = non-retryable LlmError flagged contextOverflow", async () => {
+    const body = { error: { message: "This model's maximum context length is 90000 tokens.", code: 400 } };
+    const e = await createLlm({ getConfig: () => config, fetch: fakeFetch(() => json(body, 400)).f })
+      .chat("summary", [])
+      .catch((e) => e);
+    expect(e).toMatchObject({ retryable: false, status: 400, contextOverflow: true });
+    const other = await createLlm({ getConfig: () => config, fetch: fakeFetch(() => json({ error: { message: "bad" } }, 400)).f })
+      .chat("summary", [])
+      .catch((e) => e);
+    expect(other.contextOverflow).toBe(false);
+  });
+
+  it("contextTokens of the route chat would use; null when unset/unrouted", () => {
+    const c = parseConfig({
+      llm: {
+        providers: [{ id: "local", baseUrl: "http://l" }, { id: "paid", baseUrl: "https://p" }],
+        tasks: { summary: [{ provider: "local", model: "m", contextTokens: 90000 }, { provider: "paid", model: "big" }] },
+      },
+    });
+    const llm = createLlm({ getConfig: () => c });
+    expect(llm.contextTokens("summary")).toBe(90000);
+    expect(llm.contextTokens("summary", { provider: "paid", model: "big" })).toBeNull();
+    expect(llm.contextTokens("summary", { provider: "x", model: "y" })).toBe(90000);
+    expect(llm.contextTokens("search")).toBeNull();
   });
 
   it("non-JSON 200 (proxy page) = retryable", async () => {

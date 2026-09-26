@@ -220,6 +220,8 @@ export interface TranscriptSummary {
   createdAt: string;
   /** Transcript was re-uploaded after this summary was made. */
   stale: boolean;
+  /** 1 = whole transcript in one LLM call; >1 = too long for the model, summarized in parts then combined; null = unknown (older summary). */
+  parts: number | null;
 }
 
 export type JobStatus = "queued" | "running" | "done" | "failed";

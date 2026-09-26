@@ -37,7 +37,13 @@ export type LlmHealth = Omit<LlmTaskStatus, "task">;
 
 /** `retryable` = outage/overload (keep job queued); false = our request or their reply is wrong. */
 export class LlmError extends Error {
-  constructor(message: string, readonly retryable: boolean, readonly status: number | null = null) {
+  constructor(
+    message: string,
+    readonly retryable: boolean,
+    readonly status: number | null = null,
+    /** Prompt too long for the model: retrying the same prompt is pointless; caller may shrink it (chunking). */
+    readonly contextOverflow = false,
+  ) {
     super(message);
     this.name = "LlmError";
   }
@@ -46,6 +52,7 @@ export class LlmError extends Error {
 export interface Route {
   provider: LlmProvider;
   model: string;
+  contextTokens: number | null;
 }
 
 /**
@@ -59,7 +66,7 @@ export function resolveRoute(config: Config, task: LlmTask, preferred?: LlmRoute
   const provider = config.llm.providers.find((p) => p.id === r.provider);
   // parseConfig rejects this; guard anyway since config reloads live.
   if (!provider) throw new LlmError(`LLM provider "${r.provider}" not configured.`, true);
-  return { provider, model: r.model };
+  return { provider, model: r.model, contextTokens: r.contextTokens };
 }
 
 export function sameRoute(a: LlmRouteRef, b: LlmRouteRef): boolean {
@@ -144,6 +151,17 @@ export function errorMessage(status: number, body: string): string {
   return `HTTP ${status}${msg ? `: ${msg.slice(0, 500)}` : ""}`;
 }
 
+/**
+ * Prompt exceeded the context window. Wording per server (all 400): vLLM + OpenAI "maximum context length is N tokens"
+ * (verified live on vLLM), OpenAI code `context_length_exceeded`, llama.cpp `exceed_context_size_error` / "exceeds the
+ * available context size", Anthropic via OpenRouter "prompt is too long". 413 = body too large, same remedy.
+ */
+export function isContextOverflow(status: number, body: string): boolean {
+  if (status === 413) return true;
+  if (status !== 400) return false;
+  return /context[ _](length|size|window)|maximum context|prompt is too long|too many (input )?tokens/i.test(body);
+}
+
 export function batches<T>(items: T[], size: number): T[][] {
   const out: T[][] = [];
   for (let i = 0; i < items.length; i += size) out.push(items.slice(i, i + size));
@@ -165,6 +183,8 @@ export interface LlmOptions {
 
 export interface Llm {
   chat(task: LlmTask, messages: ChatMessage[], opts?: ChatOptions): Promise<ChatResult>;
+  /** Configured context window of the route `chat` would use; null = unknown or task unrouted. */
+  contextTokens(task: LlmTask, route?: LlmRouteRef | null): number | null;
   embed(task: LlmTask, inputs: string[], signal?: AbortSignal): Promise<EmbedResult>;
   health(task: LlmTask): Promise<LlmHealth>;
 }
@@ -196,7 +216,11 @@ export function createLlm(opts: LlmOptions): Llm {
       throw new LlmError(`${provider.id} ${path}: ${why}`, true);
     }
     const text = await res.text().catch(() => "");
-    if (!res.ok) throw new LlmError(`${provider.id} ${path}: ${errorMessage(res.status, text)}`, isRetryableStatus(res.status), res.status);
+    if (!res.ok) {
+      const overflow = isContextOverflow(res.status, text);
+      // Overflow is deterministic → never retryable, even if a proxy reports it as 5xx-ish.
+      throw new LlmError(`${provider.id} ${path}: ${errorMessage(res.status, text)}`, !overflow && isRetryableStatus(res.status), res.status, overflow);
+    }
     try {
       return JSON.parse(text);
     } catch {
@@ -210,6 +234,14 @@ export function createLlm(opts: LlmOptions): Llm {
       const route = resolveRoute(opts.getConfig(), task, o.route);
       const raw = await call(route, "POST", "/chat/completions", buildChatBody(route.model, messages, o), chatTimeout, o.signal);
       return parseChatResponse(raw, route.provider.id, route.model);
+    },
+
+    contextTokens(task, route) {
+      try {
+        return resolveRoute(opts.getConfig(), task, route).contextTokens;
+      } catch {
+        return null;
+      }
     },
 
     async embed(task, inputs, signal) {

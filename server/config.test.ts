@@ -26,8 +26,8 @@ describe("parseConfig", () => {
         tasks: { search: { provider: "local", model: "m" }, summary: [{ provider: "local", model: "m" }, { provider: "paid", model: "big" }] },
       },
     });
-    expect(c.llm.tasks.search).toEqual([{ provider: "local", model: "m" }]);
-    expect(c.llm.tasks.summary).toEqual([{ provider: "local", model: "m" }, { provider: "paid", model: "big" }]);
+    expect(c.llm.tasks.search).toEqual([{ provider: "local", model: "m", contextTokens: null }]);
+    expect(c.llm.tasks.summary).toEqual([{ provider: "local", model: "m", contextTokens: null }, { provider: "paid", model: "big", contextTokens: null }]);
     const bad = () =>
       parseConfig({
         llm: {
@@ -38,6 +38,14 @@ describe("parseConfig", () => {
     expect(bad).toThrow(/summary\[1\] duplicated/);
     expect(bad).toThrow(/summary\[2\].provider "x"/);
     expect(bad).toThrow(/search must not be empty/);
+  });
+
+  it("route contextTokens: optional (null), integer ≥ 4096", () => {
+    const providers = [{ id: "local", baseUrl: "http://l" }];
+    const route = (contextTokens: unknown) => parseConfig({ llm: { providers, tasks: { summary: { provider: "local", model: "m", contextTokens } } } });
+    expect(route(90000).llm.tasks.summary).toEqual([{ provider: "local", model: "m", contextTokens: 90000 }]);
+    expect(route(null).llm.tasks.summary?.[0].contextTokens).toBeNull();
+    for (const bad of [1000, 8192.5, "90000"]) expect(() => route(bad)).toThrow(/summary.contextTokens must be an integer ≥ 4096/);
   });
 
   it("normalizes usernames, base URLs and empty api keys", () => {

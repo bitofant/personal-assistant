@@ -19,6 +19,17 @@ describe("parseTranscriptUpload", () => {
     expect(t.segments[2].speaker).toBeNull();
   });
 
+  it("accepts `pa transcribe` output as-is: nil keys omitted (no meeting, no speaker), UTC whole seconds", () => {
+    // Fixture = exactly what osx PACore encodes (PaUploadFixtureTests).
+    const raw = JSON.parse(readFileSync("shared/fixtures/transcript-upload-pa.json", "utf8"));
+    expect("meeting" in raw).toBe(false);
+    expect("speaker" in raw.segments[4]).toBe(false);
+    const t = parseTranscriptUpload(raw);
+    expect(t).toMatchObject({ id: "3f0e8a52-6c1d-4b8e-9d57-2a4c1e7b9f10", meeting: null, startedAt: "2026-09-24T07:00:03.000Z", endedAt: "2026-09-24T07:02:03.000Z" });
+    expect(t.segments.map((s) => s.speaker)).toEqual(["Alice Example", "Speaker 1", "Speaker 2", "Alice Example", null]);
+    expect(t.diarizationModel).toBe("fluidaudio-offline-vbx-0.17.4");
+  });
+
   it("accepts ad-hoc (meeting null) and blank strings become null", () => {
     const t = parseTranscriptUpload({ ...fixture(), meeting: null, diarizationModel: "  " });
     expect(t.meeting).toBeNull();

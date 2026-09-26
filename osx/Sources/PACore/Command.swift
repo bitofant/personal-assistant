@@ -12,6 +12,20 @@ public enum Command: Equatable, Sendable {
     case status
     /// Path to a `TranscriptUpload` JSON file.
     case upload(String)
+    case transcribe(TranscribeOptions)
+}
+
+public struct TranscribeOptions: Equatable, Sendable {
+    /// nil = ~/pa-test-capture.
+    public var dir: String? = nil
+    /// `yyyyMMdd-HHmmss`; nil = newest recording in `dir`.
+    public var stamp: String? = nil
+    /// Mic speaker label; nil = macOS full user name.
+    public var me: String? = nil
+    public var diarize = true
+    public var upload = false
+
+    public init() {}
 }
 
 public struct TestCaptureOptions: Equatable, Sendable {
@@ -44,6 +58,9 @@ public let usage = """
           Show pairing state (asks the server).
       pa upload <transcript.json>
           Upload a TranscriptUpload JSON file (shared/api.ts) to the paired server.
+      pa transcribe [DIR] [--stamp yyyyMMdd-HHmmss] [--me NAME] [--no-diarize] [--upload]
+          Transcribe a test-capture recording (mic = you, system = diarized) → DIR/pa-<stamp>-transcript.json.
+          Default: newest recording in ~/pa-test-capture; --me defaults to your macOS full name.
     """
 
 /// `args` excludes argv[0].
@@ -103,6 +120,30 @@ public func parseCommand(_ args: [String]) throws(UsageError) -> Command {
     case "upload":
         guard args.count == 2, !args[1].isEmpty else { throw UsageError("upload needs a transcript JSON file") }
         return .upload(args[1])
+    case "transcribe":
+        var o = TranscribeOptions()
+        var it = args.dropFirst().makeIterator()
+        while let a = it.next() {
+            switch a {
+            case "--stamp":
+                guard let v = it.next(), parseCaptureStamp(v, timeZone: TimeZone(identifier: "UTC")!) != nil else {
+                    throw UsageError("--stamp needs yyyyMMdd-HHmmss")
+                }
+                o.stamp = v
+            case "--me":
+                guard let v = it.next()?.trimmingCharacters(in: .whitespaces), !v.isEmpty else { throw UsageError("--me needs a name") }
+                o.me = v
+            case "--no-diarize":
+                o.diarize = false
+            case "--upload":
+                o.upload = true
+            default:
+                if a.hasPrefix("--") { throw UsageError("unknown flag \(a)") }
+                guard o.dir == nil, !a.isEmpty else { throw UsageError("transcribe takes one capture directory") }
+                o.dir = a
+            }
+        }
+        return .transcribe(o)
     default:
         throw UsageError("unknown command \(sub)")
     }
