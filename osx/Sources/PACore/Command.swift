@@ -13,6 +13,10 @@ public enum Command: Equatable, Sendable {
     /// Path to a `TranscriptUpload` JSON file.
     case upload(String)
     case transcribe(TranscribeOptions)
+    /// Daemon. For now: upload queue worker only (calendar/capture planned).
+    case run
+    /// List pending + failed uploads.
+    case queue
 }
 
 public struct TranscribeOptions: Equatable, Sendable {
@@ -58,9 +62,14 @@ public let usage = """
           Show pairing state (asks the server).
       pa upload <transcript.json>
           Upload a TranscriptUpload JSON file (shared/api.ts) to the paired server.
+      pa run
+          Daemon (LaunchAgent). For now only uploads the queue: retries with backoff, pauses on 401 until re-paired.
+      pa queue
+          List queued uploads (pending, failed/) in ~/Library/Application Support/com.bitofant.pa/upload-queue.
       pa transcribe [DIR] [--stamp yyyyMMdd-HHmmss] [--me NAME] [--no-diarize] [--upload]
           Transcribe a test-capture recording (mic = you, system = diarized) → DIR/pa-<stamp>-transcript.json.
           Default: newest recording in ~/pa-test-capture; --me defaults to your macOS full name.
+          --upload queues it and tries once; if that fails, `pa run` keeps retrying.
     """
 
 /// `args` excludes argv[0].
@@ -117,6 +126,9 @@ public func parseCommand(_ args: [String]) throws(UsageError) -> Command {
     case "status":
         guard args.count == 1 else { throw UsageError("status takes no arguments") }
         return .status
+    case "run", "queue":
+        guard args.count == 1 else { throw UsageError("\(sub) takes no arguments") }
+        return sub == "run" ? .run : .queue
     case "upload":
         guard args.count == 2, !args[1].isEmpty else { throw UsageError("upload needs a transcript JSON file") }
         return .upload(args[1])

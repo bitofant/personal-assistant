@@ -54,6 +54,20 @@ public struct MeetingMeta: Codable, Equatable, Sendable {
     public var end: String
     public var organizer: Person?
     public var attendees: [Person]
+
+    public init(
+        calendarName: String?, eventId: String?, seriesId: String?, title: String?, start: String, end: String,
+        organizer: Person?, attendees: [Person]
+    ) {
+        self.calendarName = calendarName
+        self.eventId = eventId
+        self.seriesId = seriesId
+        self.title = title
+        self.start = start
+        self.end = end
+        self.organizer = organizer
+        self.attendees = attendees
+    }
 }
 
 public struct TranscriptSegment: Codable, Equatable, Sendable {

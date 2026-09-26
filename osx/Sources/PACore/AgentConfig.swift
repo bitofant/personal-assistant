@@ -10,19 +10,28 @@ public struct AgentConfig: Codable, Equatable, Sendable {
     public var serverURL: String?
     public var account: String?
     public var deviceId: String?
+    /// Calendars whose events drive/label recordings: `Name` or `Source/Name`. nil = none → every recording is ad-hoc
+    /// (personal event titles/attendees never reach the server by accident).
+    public var workCalendars: [String]?
 
-    public init(micDeviceUID: String? = nil, serverURL: String? = nil, account: String? = nil, deviceId: String? = nil) {
+    public init(
+        micDeviceUID: String? = nil, serverURL: String? = nil, account: String? = nil, deviceId: String? = nil,
+        workCalendars: [String]? = nil
+    ) {
         self.micDeviceUID = micDeviceUID
         self.serverURL = serverURL
         self.account = account
         self.deviceId = deviceId
+        self.workCalendars = workCalendars
     }
 }
 
-/// Normalizes at the boundary: blank UID → nil.
+/// Normalizes at the boundary: blank UID → nil; work calendars trimmed, blanks dropped, empty → nil.
 public func parseAgentConfig(_ data: Data) throws -> AgentConfig {
     var c = try JSONDecoder().decode(AgentConfig.self, from: data)
     if c.micDeviceUID?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == true { c.micDeviceUID = nil }
+    let cals = (c.workCalendars ?? []).map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }.filter { !$0.isEmpty }
+    c.workCalendars = cals.isEmpty ? nil : cals
     return c
 }
 
