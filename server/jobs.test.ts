@@ -72,6 +72,21 @@ describe("JobQueue", () => {
     expect(q.nextRunAt()).toBeNull();
   });
 
+  it("remove: deletes only that (user, type, key); a run in flight can't settle or resurrect it", () => {
+    q.enqueue(1, "s", "k");
+    q.enqueue(1, "s", "other");
+    q.enqueue(2, "s", "k");
+    const job = q.claimNext()!;
+    expect(q.remove(1, "s", "k")).toBe(true);
+    expect(q.remove(1, "s", "k")).toBe(false);
+    expect(q.find(1, "s", "k")).toBeNull();
+    expect(q.complete(job)).toBe(false);
+    q.fail(job, new Error("x"), policy);
+    expect(q.find(1, "s", "k")).toBeNull();
+    expect(q.find(1, "s", "other")).not.toBeNull();
+    expect(q.find(2, "s", "k")).not.toBeNull();
+  });
+
   it("re-enqueue while running: the old run can't settle it, so the new payload runs", () => {
     q.enqueue(1, "s", "k", "v1");
     const job = q.claimNext()!;

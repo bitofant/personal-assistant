@@ -11,7 +11,7 @@ Status: early. The server supports:
 - web accounts (sign up, then an admin enables the account)
 - pairing a Mac as a device (you approve it with a 6-digit code)
 - transcript upload from a paired device
-- a web UI to browse transcripts
+- a web UI to browse transcripts, and to delete one (with its summary and search entries). A deleted transcript can't be uploaded again: the server answers `410 Gone`. Existing backups keep it until they rotate out.
 - LLM summaries of uploaded transcripts, made in a background job queue and shown on the transcript page (with progress, retry-after-outage and failure status, and a re-summarize button); `GET /api/llm/status` shows whether each LLM task is reachable. Jobs of disabled users wait until they're re-enabled.
 - summary settings page: pick the summary model (e.g. local or a paid remote one, from those the admin configured) and write custom instructions per recurring series, per meeting type, or as your default. The most specific ones win. The meeting type (1:1, stand-up, interview, external, meeting, ad-hoc) comes from the calendar event: no event means ad-hoc, title keywords decide next, and 2 attendees means 1:1. When those rules can't tell, a recurring meeting reuses the type of its earlier occurrences, and otherwise the LLM classifies it.
 - keyword search (search box in the nav bar, `GET /api/search?q=`) over titles, attendee names/emails and what was said. Every word must appear somewhere in the meeting; words match as prefixes, `"quoted phrases"` match exactly, and case and accents are ignored. Results show the best matching lines highlighted; click a timestamp to jump to that line. Filter by date range and by people (name or email, comma-separated; all must have attended). Filters work without a query too, listing matching meetings newest first. Semantic (embedding) search isn't built yet; see `AGENTS.md`.
@@ -96,6 +96,6 @@ build/PA.app/Contents/MacOS/pa transcribe          # newest capture → ~/pa-tes
 build/PA.app/Contents/MacOS/pa transcribe --upload # …and upload it to the paired server
 ```
 
-`pa transcribe` labels the mic stream as you (`--me NAME`, default: your macOS full name) and splits the system stream into `Speaker 1`, `Speaker 2`, …. Use `--stamp yyyyMMdd-HHmmss` to pick an older recording and `--no-diarize` to skip speaker separation. Re-running on the same recording keeps its id, so a re-upload replaces the transcript instead of duplicating it.
+`pa transcribe` labels the mic stream as you (`--me NAME`, default: your macOS full name) and splits the system stream into `Speaker 1`, `Speaker 2`, …. Use `--stamp yyyyMMdd-HHmmss` to pick an older recording and `--no-diarize` to skip speaker separation. Re-running on the same recording keeps its id, so a re-upload replaces the transcript instead of duplicating it. If you deleted that transcript in the web UI, the upload is refused; delete the `-transcript.json` file to transcribe it again as a new transcript.
 
 Launch `test-capture` with `open` as shown. If you run the binary directly from a terminal, macOS attributes the permission prompts to the terminal app instead of PA.

@@ -25,7 +25,7 @@ import { parseSearchRequest, searchTranscripts } from "./search.js";
 import { effectiveChoice, getSummaryLlm, parseRouteChoice, setSummaryLlm } from "./settings.js";
 import { getSummary, SUMMARIZE_JOB, summarizeHandler, type SummarizePayload } from "./summaries.js";
 import { bearerToken, HttpError, isRecord, readJson, sendError, sendJson, sendNoContent } from "./http.js";
-import { getTranscript, transcriptExists, listTranscripts, MAX_TRANSCRIPT_BYTES, parseTranscriptUpload, upsertTranscript } from "./transcripts.js";
+import { deleteTranscript, getTranscript, transcriptExists, listTranscripts, MAX_TRANSCRIPT_BYTES, parseTranscriptUpload, upsertTranscript } from "./transcripts.js";
 
 export interface AppOptions {
   dataDir: string;
@@ -152,6 +152,14 @@ export function createApp(opts: AppOptions): App {
     const t = getTranscript(db, params[0], devices.names(user.id));
     if (!t) throw new HttpError(404, "No such transcript.");
     sendJson(res, { ...t, ...summaryOf(user.id, t.id) } satisfies TranscriptDetail);
+  });
+  route("DELETE", "/api/transcripts/:id", ({ req, res, params }) => {
+    const user = auth.requireUser(req);
+    const id = params[0].toLowerCase();
+    if (!deleteTranscript(store.user(user.id), id, now())) throw new HttpError(404, "No such transcript.");
+    // After the row is gone: a run in flight saves nothing and can't settle the removed job.
+    jobs.remove(user.id, SUMMARIZE_JOB, id);
+    sendNoContent(res);
   });
   route("GET", "/api/transcripts/:id/summary", ({ req, res, params }) => {
     const user = auth.requireUser(req);

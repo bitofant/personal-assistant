@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import { readFileSync } from "node:fs";
 import Database from "better-sqlite3";
 import { migrate, USER_MIGRATIONS } from "./db.js";
-import { getTranscript, listTranscripts, parseTranscriptUpload, upsertTranscript } from "./transcripts.js";
+import { deleteTranscript, getTranscript, listTranscripts, parseTranscriptUpload, upsertTranscript } from "./transcripts.js";
 
 const FIXTURE_RAW = readFileSync("shared/fixtures/transcript-upload.json", "utf8");
 const fixture = () => JSON.parse(FIXTURE_RAW) as Record<string, any>;
@@ -64,6 +64,7 @@ describe("parseTranscriptUpload", () => {
 describe("transcript storage", () => {
   const db = () => {
     const d = new Database(":memory:");
+    d.pragma("foreign_keys = ON"); // as openDb: delete relies on cascades
     migrate(d, USER_MIGRATIONS);
     return d;
   };
@@ -109,5 +110,44 @@ describe("transcript storage", () => {
     expect(list.map((x) => x.id)).toEqual([b.id, a.id]);
     expect(list[0]).toMatchObject({ attendeeCount: null, title: null, deviceName: null, segmentCount: 3 });
     expect(list[1]).toMatchObject({ attendeeCount: 2, title: "Alice / Bob 1:1", deviceName: "Mac" });
+  });
+
+  describe("delete", () => {
+    const count = (d: Database.Database, sql: string, ...args: unknown[]) => (d.prepare(sql).get(...args) as { n: number }).n;
+
+    it("removes transcript, summary, search rows and FTS terms; leaves others alone", () => {
+      const d = db();
+      const a = parseTranscriptUpload(fixture());
+      const b = parseTranscriptUpload({ ...fixture(), id: "00000000-0000-4000-8000-000000000000" });
+      upsertTranscript(d, "dev1", a, "", 1);
+      upsertTranscript(d, "dev1", b, "", 1);
+      d.prepare(
+        `INSERT INTO summaries (transcript_id, text, meeting_type, instructions_source, instructions, provider, model, transcript_updated_at, created_at)
+         VALUES (?, 's', 'meeting', 'default', '', 'p', 'm', 1, 1)`,
+      ).run(a.id);
+      const word = a.segments[0].text.split(/\W+/).find((w) => w.length > 3)!;
+      const fts = () => count(d, "SELECT count(*) n FROM search_fts WHERE search_fts MATCH ?", `"${word}"`);
+      expect(fts()).toBe(2);
+
+      expect(deleteTranscript(d, a.id.toUpperCase(), 5)).toBe(true);
+      expect(getTranscript(d, a.id, new Map())).toBeNull();
+      expect(count(d, "SELECT count(*) n FROM summaries")).toBe(0);
+      expect(count(d, "SELECT count(*) n FROM search_rows WHERE transcript_id = ?", a.id)).toBe(0);
+      // Deleted text must leave the FTS index too, not just be filtered out by the join.
+      expect(fts()).toBe(1);
+      expect(listTranscripts(d, new Map()).map((x) => x.id)).toEqual([b.id]);
+
+      expect(deleteTranscript(d, a.id, 6)).toBe(false);
+      expect(deleteTranscript(d, "nope", 6)).toBe(false);
+    });
+
+    it("tombstone: re-upload of a deleted id is refused (410) so a device retry can't resurrect it", () => {
+      const d = db();
+      const t = parseTranscriptUpload(fixture());
+      upsertTranscript(d, "dev1", t, "", 1);
+      deleteTranscript(d, t.id, 5);
+      expect(() => upsertTranscript(d, "dev1", t, "", 6)).toThrow(expect.objectContaining({ status: 410 }));
+      expect(listTranscripts(d, new Map())).toEqual([]);
+    });
   });
 });

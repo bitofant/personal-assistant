@@ -182,7 +182,33 @@ function Transcript({ id, seg }: { id: string; seg: number | null }) {
       <p style={{ color: "#888", fontSize: "0.8rem" }}>
         ASR {t.asrModel} · diarization {formatValue(t.diarizationModel)} · received {formatDateTime(t.receivedAt)}
       </p>
+      <DeleteTranscript id={t.id} title={m?.title ?? "this ad-hoc call"} />
     </article>
+  );
+}
+
+function DeleteTranscript({ id, title }: { id: string; title: string }) {
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const remove = async () => {
+    // Nightly backups still hold it until they rotate out; say so rather than promise instant erasure.
+    if (!confirm(`Delete "${title}" with its summary? This can't be undone, and the Mac won't be able to upload it again. Existing backups keep it until they expire.`)) return;
+    setBusy(true);
+    try {
+      await api(`/transcripts/${encodeURIComponent(id)}`, { method: "DELETE" });
+      location.hash = "#/";
+    } catch (e) {
+      setError((e as Error).message);
+      setBusy(false);
+    }
+  };
+  return (
+    <p>
+      <button disabled={busy} onClick={() => void remove()} style={{ color: "crimson" }}>
+        {busy ? "Deleting…" : "Delete transcript"}
+      </button>
+      {error && <ErrorLine error={error} />}
+    </p>
   );
 }
 

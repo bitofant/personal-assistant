@@ -156,7 +156,12 @@ describe("searchTranscripts", () => {
   it("migration backfills transcripts stored before search existed", () => {
     const d = new Database(":memory:");
     migrate(d, USER_MIGRATIONS.slice(0, 3));
-    upsertTranscript(d, "dev1", parseTranscriptUpload(fixture()), "", 1);
+    // Raw insert: today's upsertTranscript needs tables from later migrations.
+    const t = parseTranscriptUpload(fixture());
+    d.prepare(
+      `INSERT INTO transcripts (id, device_id, started_at, ended_at, title, segment_count, raw, data, received_at, updated_at)
+       VALUES (?, 'dev1', ?, ?, ?, ?, '', ?, 1, 1)`,
+    ).run(t.id, t.startedAt, t.endedAt, t.meeting?.title ?? null, t.segments.length, JSON.stringify(t));
     migrate(d, USER_MIGRATIONS);
     expect(search(d, "bob roadmap").results).toHaveLength(1);
   });

@@ -115,6 +115,8 @@ export function upsertTranscript(
   raw: string,
   now: number,
 ): TranscriptUploadResponse & { changed: boolean } {
+  if (db.prepare("SELECT 1 FROM deleted_transcripts WHERE id = ?").get(t.id))
+    throw new HttpError(410, "This transcript was deleted on the server; it won't be stored again.");
   const data = JSON.stringify(t);
   const prev = db.prepare("SELECT data FROM transcripts WHERE id = ?").get(t.id) as { data: string } | undefined;
   db.prepare(
@@ -192,6 +194,19 @@ export function transcriptListItems(db: Db, ids: string[], deviceNames: Map<stri
 /** `id` must already be canonical (lowercase). */
 export function transcriptExists(db: Db, id: string): boolean {
   return db.prepare("SELECT 1 FROM transcripts WHERE id = ?").get(id) !== undefined;
+}
+
+/**
+ * Deletes a transcript + (FK cascade) its summary and search rows (FTS via their delete trigger), and leaves a
+ * tombstone so re-uploads get 410. False = no such transcript. Caller drops app.db jobs (other DB).
+ */
+export function deleteTranscript(db: Db, id: string, now: number): boolean {
+  const canonical = id.toLowerCase();
+  return db.transaction(() => {
+    if (db.prepare("DELETE FROM transcripts WHERE id = ?").run(canonical).changes === 0) return false;
+    db.prepare("INSERT OR REPLACE INTO deleted_transcripts (id, deleted_at) VALUES (?, ?)").run(canonical, now);
+    return true;
+  })();
 }
 
 // Summary fields live elsewhere (summaries table, app.db jobs); app.ts joins them.
