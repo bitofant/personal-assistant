@@ -44,7 +44,7 @@ func transcribe(_ o: TranscribeOptions) async throws {
                  speakers.isEmpty ? "—" : speakers.joined(separator: ", ")))
     print("asr \(u.asrModel), diarization \(u.diarizationModel ?? "—")")
     print("→ \(out.path)")
-    if o.upload { try await upload(out.path) }
+    if o.upload { try await enqueueAndTryUpload(u) }
 }
 
 private func wavSeconds(_ url: URL) throws -> Double {

@@ -96,9 +96,11 @@ To transcribe a recording on the Mac (Parakeet v3 speech-to-text + speaker diari
 ```sh
 ./bench-asr.sh                                    # FluidAudio's own CLI on the newest capture: speed + raw transcripts
 build/PA.app/Contents/MacOS/pa transcribe          # newest capture → ~/pa-test-capture/pa-<stamp>-transcript.json
-build/PA.app/Contents/MacOS/pa transcribe --upload # …and upload it to the paired server
+build/PA.app/Contents/MacOS/pa transcribe --upload # …and queue it for upload to the paired server (tries once now)
+build/PA.app/Contents/MacOS/pa queue              # pending + failed uploads
+build/PA.app/Contents/MacOS/pa run                # daemon (so far: retries the upload queue)
 ```
 
-`pa transcribe` labels the mic stream as you (`--me NAME`, default: your macOS full name) and splits the system stream into `Speaker 1`, `Speaker 2`, …. Use `--stamp yyyyMMdd-HHmmss` to pick an older recording and `--no-diarize` to skip speaker separation. Re-running on the same recording keeps its id, so a re-upload replaces the transcript instead of duplicating it. If you deleted that transcript in the web UI, the upload is refused; delete the `-transcript.json` file to transcribe it again as a new transcript.
+`pa transcribe` labels the mic stream as you (`--me NAME`, default: your macOS full name) and splits the system stream into `Speaker 1`, `Speaker 2`, …. Use `--stamp yyyyMMdd-HHmmss` to pick an older recording and `--no-diarize` to skip speaker separation. Re-running on the same recording keeps its id, so a re-upload replaces the transcript instead of duplicating it. Uploads go through a queue on disk (`~/Library/Application Support/com.bitofant.pa/upload-queue/`): if the server is unreachable, `pa run` retries with backoff; a revoked or unpaired device pauses the queue until you `pa pair` again; uploads the server rejects as invalid move to `failed/`. If you deleted that transcript in the web UI, the upload is refused (and dropped from the queue); delete the `-transcript.json` file to transcribe it again as a new transcript.
 
 Launch `test-capture` with `open` as shown. If you run the binary directly from a terminal, macOS attributes the permission prompts to the terminal app instead of PA.

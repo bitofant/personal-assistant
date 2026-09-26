@@ -56,6 +56,16 @@ for everything except `test-capture`, which needs TCC → launch via `open`).
 - [ ] Summary appears (ad-hoc type, no calendar yet); read it critically
 - [ ] Search finds a word you said
 
+## 6. Upload queue + `pa run` (never compiled/run)
+
+- [ ] `pa queue` → `queue empty (…/upload-queue)`
+- [ ] Server down (or stop the ssh tunnel), `pa transcribe --upload` → "retry after …", "still queued"; `pa queue` shows it `pending` with the error
+- [ ] `pa run` in a terminal; bring the server back → uploaded within the backoff (≤ a few min), log lines timestamped + flushed
+- [ ] Revoke the device in the web UI while `pa run` runs, then `pa transcribe --upload` → `pa run` logs "stopped until re-paired", then one "pairing check" line per change (not every minute)
+- [ ] `pa pair` again (same server/account) + approve → `pa run` logs "resumed" and uploads without a restart
+- [ ] Delete a transcript in the web UI, re-run `pa transcribe --upload` for that recording → "dropped … (deleted on server)", gone from `pa queue`
+- [ ] Ctrl-C `pa run` → exits promptly
+
 ## Report back (to the dev box)
 
 - Compile fixes (diff) + anything surprising about FluidAudio's API
@@ -63,4 +73,5 @@ for everything except `test-capture`, which needs TCC → launch via `open`).
 - Timings: capture length vs ASR / diarization wall time, cold vs warm
 - TCC + Keychain prompt behaviour (who they were attributed to, any repeats)
 - Summary quality notes on a real meeting (language, speaker labels, misheard words)
+- Upload queue: log output of the outage / revoke / re-pair runs
 - Anything to record in AGENTS.md as "verified live"
