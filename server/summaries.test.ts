@@ -34,6 +34,7 @@ import {
   parseClassifyReply,
   parseSummaryReply,
   saveSummary,
+  seriesMeetingType,
   summarizeHandler,
 } from "./summaries.js";
 import { parseTranscriptUpload, upsertTranscript } from "./transcripts.js";
@@ -146,6 +147,13 @@ describe("classifyMeeting", () => {
     expect(await classifyMeeting(t, bad.llm)).toEqual({ type: "meeting", source: "fallback" });
   });
 
+  it("series type (earlier occurrence) = no LLM call; a rule still wins over it", async () => {
+    const { llm, calls } = fakeLlm(async () => ({ text: "meeting" }));
+    expect(await classifyMeeting(withMeeting("Q4 planning", 5), llm, { seriesType: "external" })).toEqual({ type: "external", source: "series" });
+    expect(await classifyMeeting(withMeeting("Daily sync", 5), llm, { seriesType: "external" })).toEqual({ type: "standup", source: "rule" });
+    expect(calls).toHaveLength(0);
+  });
+
   it("outage propagates (job waits) instead of guessing", async () => {
     const down = fakeLlm(async () => {
       throw new LlmError("ECONNREFUSED", true);
@@ -239,6 +247,39 @@ describe("summary storage", () => {
   });
 });
 
+describe("seriesMeetingType", () => {
+  const SERIES = "AAMkAGI2TG93SERIES=";
+  const occurrence = (n: number, startedAt: string): TranscriptUpload => ({
+    ...withMeeting("Q4 planning", 5),
+    id: `00000000-0000-4000-8000-00000000000${n}`,
+    startedAt,
+  });
+  const summarized = (db: Database.Database, t: TranscriptUpload, meetingType: "external" | "meeting" | "interview", meetingTypeSource: "rule" | "series" | "llm" | "fallback" | null) => {
+    upsertTranscript(db, "dev", t, RAW, 1000);
+    saveSummary(db, { transcriptId: t.id, text: "S", meetingType, meetingTypeSource: meetingTypeSource as "llm", instructions: builtin(meetingType), provider: "local", model: "m1", usage: { promptTokens: null, completionTokens: null }, parts: 1, transcriptUpdatedAt: 1000 }, 5000);
+  };
+
+  it("latest other summarized occurrence; skips self, fallback + unknown source, other series", () => {
+    const db = new Database(":memory:");
+    migrate(db, USER_MIGRATIONS);
+    const self = occurrence(9, "2026-09-30T09:00:00.000Z");
+    upsertTranscript(db, "dev", self, RAW, 1000);
+    expect(seriesMeetingType(db, SERIES, self.id)).toBeNull();
+    expect(seriesMeetingType(db, null, self.id)).toBeNull();
+
+    summarized(db, occurrence(1, "2026-09-01T09:00:00.000Z"), "external", "llm");
+    summarized(db, occurrence(2, "2026-09-08T09:00:00.000Z"), "interview", "series");
+    summarized(db, occurrence(3, "2026-09-15T09:00:00.000Z"), "meeting", "fallback");
+    summarized(db, occurrence(4, "2026-09-22T09:00:00.000Z"), "meeting", null);
+    const other = { ...occurrence(5, "2026-09-29T09:00:00.000Z"), meeting: { ...self.meeting!, seriesId: "OTHER" } };
+    summarized(db, other, "meeting", "llm");
+    expect(seriesMeetingType(db, SERIES, self.id.toUpperCase())).toBe("interview");
+
+    summarized(db, self, "external", "llm"); // own summary doesn't count
+    expect(seriesMeetingType(db, SERIES, self.id)).toBe("interview");
+  });
+});
+
 describe("summarizeHandler", () => {
   const job = (key: string, payload: unknown = null): Job => ({ id: 1, userId: 1, type: "summarize", key, payload, status: "running", generation: 1, attempts: 1, failures: 0, runAt: 0, lastError: null, createdAt: 0, updatedAt: 0 });
 
@@ -287,6 +328,25 @@ describe("summarizeHandler", () => {
       expect(calls).toHaveLength(2);
       expect(calls[1][0].content).toContain("## Their needs and concerns");
       expect(getSummary(store.user(1), t.id)).toMatchObject({ meetingType: "external", meetingTypeSource: "llm", instructionsSource: "builtin:external" });
+    } finally {
+      cleanup();
+    }
+  });
+
+  it("recurring series: next occurrence reuses the classified type, no classify call", async () => {
+    const { store, handler, calls, cleanup } = setup(async (m) => reply(m[0].content.startsWith("You classify") ? "external" : "## S"));
+    try {
+      const db = store.user(1);
+      const first = withMeeting("Q4 planning", 5);
+      upsertTranscript(db, "dev", first, RAW, 1000);
+      await handler(job(first.id), new AbortController().signal);
+      expect(calls).toHaveLength(2);
+      const next = { ...first, id: "00000000-0000-4000-8000-000000000002", startedAt: "2026-10-01T07:00:03.000Z" };
+      upsertTranscript(db, "dev", next, RAW, 2000);
+      await handler(job(next.id), new AbortController().signal);
+      expect(calls).toHaveLength(3);
+      expect(calls[2][0].content).toContain("## Their needs and concerns");
+      expect(getSummary(db, next.id)).toMatchObject({ meetingType: "external", meetingTypeSource: "series", instructionsSource: "builtin:external" });
     } finally {
       cleanup();
     }

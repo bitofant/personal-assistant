@@ -257,6 +257,7 @@ function SummaryPanel({ transcriptId, initial }: { transcriptId: string; initial
           <p style={muted}>
             {meetingTypeLabel(summary.meetingType)}
             {summary.meetingTypeSource === "llm" && " (detected by LLM)"}
+            {summary.meetingTypeSource === "series" && " (same as earlier meetings in this series)"}
             {summary.meetingTypeSource === "fallback" && " (type not detected)"} · {summary.provider}/{summary.model}
             {summary.parts !== null && summary.parts > 1 && ` · long meeting: summarized in ${summary.parts} parts`} ·{describeInstructionsSource(summary.instructionsSource)} (
             <a href="#/settings">edit</a>) · {formatDateTime(summary.createdAt)}

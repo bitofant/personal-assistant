@@ -39,9 +39,10 @@ The repo has a few components:
 
 ## Project state
 - Server scaffold (settled): config loading/validation, `GET /api/health`, static/Vite serving, systemd scripts.
-- Server (built): SQLite store, web auth, device pairing + approval, transcript ingest/list/detail, minimal web UI, LLM client + job queue, summaries (+ web view with job status), custom instructions + LLM meeting-type classify + per-user summary model (settings page), search v1 (FTS5 keyword + date/attendee filters + web page).
+- Server (built): SQLite store, web auth, device pairing + approval, transcript ingest/list/detail, minimal web UI, LLM client + job queue, summaries (+ web view with job status), custom instructions + LLM meeting-type classify + per-user summary model (settings page), search v1 (FTS5 keyword + date/attendee filters + web page), nightly SQLite backups (`npm run backup` + systemd timer).
 - osx: `pa test-capture` spike runs on the Mac; Zoom tap + mic (no VP) record (verified live).
 - osx: `pa pair` / `pa status` / `pa upload <json>` built; PACore + CLI logic verified live on Linux vs scratch server (Keychain stubbed); not yet run on the Mac.
+- **Next = one Mac session** covering roadmap 1–4: follow `osx/CHECKLIST.md` (committed so it's on the Mac; its "Report back" list = what to bring to the dev box). Summary/search tuning waits for real transcripts.
 - Everything else below = planned, not built.
 - Default port **4200** (4000/4100 taken on the dev box by other services).
 - Monorepo: `server/` (Node backend), `web/` (React frontend), `shared/` (TS wire types), `osx/` (headless Swift CLI).
@@ -55,17 +56,17 @@ The repo has a few components:
 3. **osx: `pa pair` / `pa status`** — built (see osx tech → Server client); left: first run on the Mac (Keychain, `Host` name, real server over https).
 4. **osx: `pa upload <wav-dir>`** — `pa upload <json>` done; left: transcribe WAVs (item 2) → `TranscriptUpload` → first real end-to-end transcript.
 5. ~~**server: LLM client + job queue**~~ — done (see Server design → LLM / Background jobs).
-6. **server: summaries** — built: summarize job, rule + LLM classify, built-in + custom instructions (series > type > default), per-user model pick, settings page, long-transcript map-reduce. Left: maybe "instructions changed" stale flag; reuse series' type instead of re-classifying; resume part notes after an outage (now restarts from scratch).
+6. **server: summaries** — built: summarize job, rule + LLM classify, built-in + custom instructions (series > type > default), per-user model pick, settings page, long-transcript map-reduce. Series type reuse done. Left (low value, deferred): "instructions changed" stale flag; resume part notes after an outage (now restarts from scratch).
 7. **server: search** — v1 done (FTS5 keyword + date/attendee filters, see Server design → Search). Next v2: chunk+embed w/ `sqlite-vec`, hybrid merge, optional RAG answer — blocked on real transcripts (to judge retrieval) + an embedding model on the dev box. Pagination skipped: >50 hits → refine with filters.
 8. **osx: daemon (`pa run`)** — EventKit work calendars, meeting detection, auto capture → transcribe → persistent upload queue, raw-audio retention; `osx/install.sh` LaunchAgent; `os.Logger` + log file.
 9. **Speaker naming** — label speakers in web UI, per-user voice embeddings, match vs attendees; LLM name proposals never overwrite user labels.
-10. **Ops/polish** — per-user export/delete, device list/revoke UI polish, backups of `data/`.
+10. **Ops/polish** — per-user export/delete (must also purge user from backups), device list/revoke UI polish. Backups done (see Server design → Backups).
 
 ## Commands
-- `npm run dev` (tsx watch + Vite middleware), `npm run build` (frontend → `dist/web`), `npm start`.
+- `npm run dev` (tsx watch + Vite middleware), `npm run build` (frontend → `dist/web`), `npm start`, `npm run backup`.
 - `npm test`, `npm run test:watch`, `npm run test:e2e`, `npm run typecheck`.
 - `./config-gen.sh`, `./install-service.sh`, `./start.sh [dev]`, `./stop.sh`, `./restart.sh`, `./rebuild.sh`.
-- osx: `swift build` / `swift test` in `osx/`; `osx/test-linux.sh` = PACore tests on the Linux dev box (Docker `swift:6.1`; `pa` target is macOS-only in the manifest); `osx/build.sh [identity]` → signed `osx/build/PA.app`; `osx/install.sh` (LaunchAgent, planned); `osx/pick-mic.sh` (numbered mic picker); `osx/bench-asr.sh [dir] [stamp]` (Mac: pinned `fluidaudiocli` ASR + offline diarization on a capture → `bench-<stamp>/summary.txt`).
+- osx: `swift build` / `swift test` in `osx/`; `osx/test-linux.sh` = PACore tests on the Linux dev box (Docker `swift:6.1`; `pa` target is macOS-only in the manifest); `osx/build.sh [identity]` → signed `osx/build/PA.app`; `osx/install.sh` (LaunchAgent, planned); `osx/pick-mic.sh` (numbered mic picker); `osx/bench-asr.sh [dir] [stamp]` (Mac: pinned `fluidaudiocli` ASR + offline diarization on a capture → `bench-<stamp>/summary.txt`); `osx/CHECKLIST.md` = first-Mac-run steps.
 - Run bundle: `open -W --stdout $(tty) --stderr $(tty) osx/build/PA.app --args test-capture`.
 
 ## Working practices
@@ -159,7 +160,8 @@ The repo has a few components:
   - Web `SummaryPanel`: pure `web/summaryState.ts` `summaryStatusView(job, hasSummary)` → message/tone/poll/button (unit-tested); polls 2s while queued/running, 15s while waiting out a backoff (queued + `lastError`), stops on done/failed. Button: Summarize / Re-summarize / Retry, disabled in progress.
   - UI states verified live in headless Chromium (done, generating, LLM down → waiting → auto-recovered ~30s); `failed` + never-queued only unit-tested.
   - Types + descriptions + built-ins + `resolveInstructions` live in `shared/instructions.ts` (UI + server share them). Types: `1on1 standup interview external meeting adhoc`.
-  - `classifyByRule`: no event = `adhoc`; title keywords (1:1, standup/daily/scrum, interview minus debrief/prep) **before** attendee count (2-person interview ≠ 1on1); 2 attendees = `1on1`; else null → LLM (`classifyMeeting`, bare type-id reply, never picks `adhoc`). Unparseable reply / non-retryable error → `meeting` + source `fallback`; retryable → throw (job waits). Stored `meeting_type_source` rule/llm/fallback (null on old rows).
+  - Classify order: rule > series > LLM. Series = `seriesMeetingType`: type of the latest *other* summarized occurrence with source rule/series/llm (fallback + NULL-source rows skipped so a bad guess isn't copied forward) → source `series`, no LLM call, consistent instructions across a series. Re-summarizing an occurrence never reads its own row.
+  - `classifyByRule`: no event = `adhoc`; title keywords (1:1, standup/daily/scrum, interview minus debrief/prep) **before** attendee count (2-person interview ≠ 1on1); 2 attendees = `1on1`; else null → LLM (`classifyMeeting`, bare type-id reply, never picks `adhoc`). Unparseable reply / non-retryable error → `meeting` + source `fallback`; retryable → throw (job waits). Stored `meeting_type_source` rule/series/llm/fallback (null on old rows).
   - Instructions: series > type > custom default > `builtin:<type>`; each **replaces** lower levels (custom default hides built-in per-type texts — intended). Common rules always prepended. Source strings `series:<id>` / `type:<t>` / `default` / `builtin:<t>`.
   - Custom instructions: per-user `instructions (scope, key)` table; `GET /api/instructions` (custom + `series` seen in transcripts); `PUT|DELETE /api/instructions/default | /type/:type | /series/:seriesId` (URL-encoded id, case kept, trimmed; text ≤20k; DELETE idempotent). Editing doesn't mark summaries stale (re-summarize manually).
   - Settings: `GET|PUT /api/settings` `{summaryLlm, summaryLlmChoices}`; web `#/settings` (`web/Settings.tsx`) + model `<select>` in `SummaryPanel`.
@@ -186,6 +188,12 @@ The repo has a few components:
   - Filters (`from`/`to`/`with`): narrow only, never score/`metaMatch`. `from` incl / `to` excl on `started_at`, ISO w/ zone → UTC (`parseIsoTime`, shared with ingest; stored ISO strings compare lexically). `with` (≤5, AND) = `attendees : "x"*` FTS query → case/accent-insensitive word prefix, same MATERIALIZED-CTE rule. No `q` + filter = list newest first.
   - Web filters: hash holds local days (`from`/`to` inclusive); `searchApiPath` converts to [local midnight, day-after-`to` midnight) instants — server never guesses the user's zone. Nav box keeps active filters.
   - Web: nav `SearchBox` → `#/search?q=`; `web/routes.ts` = only hash builder/parser (unit-tested); `#/t/<id>/s/<n>` scrolls to + highlights segment. Verified live in headless Chromium.
+- **Backups (built):** `server/backup.ts` `backupData` → `backup.dir/<yyyyMMdd-HHmmss>Z/{app.db,users/<id>.db}`, keep newest `backup.keep` (config `backup`, default `data/backups` / 14). Timer `personal-assistant-backup.timer` (03:30, `Persistent`) installed by `install-service.sh`.
+  - `VACUUM INTO` per DB = online-safe consistent copy incl. uncommitted-to-main WAL content; a raw file copy misses it (even the schema, mutation-checked). Snapshot files are `journal_mode=delete` → self-contained.
+  - Written to `<stamp>.partial`, `quick_check`, then rename → listed snapshot always complete; leftover partials pruned; unknown names in the dir never touched.
+  - Opens DBs without `migrate()`: a backup never changes schema.
+  - ⚠️ Entry = `server/backup-main.ts`, not an `import.meta.url === argv[1]` guard: guard failed via symlinked path → silent no-op backup (verified live). Don't "simplify" back.
+  - Verified live: scratch server running (WAL open), 3 runs, prune to keep=2; bad config.json → exit 1 (unit fails visibly). Units pass `systemd-analyze verify`.
 - **Search v2 (planned, not built):** hybrid — FTS5 + `sqlite-vec` (embeddings of ~1-min chunks) → merge/rerank → optional LLM answer citing chunks (RAG).
 - **Wire contract:** `shared/api.ts` is source of truth; Swift `Codable` mirrors it (`osx/Sources/PACore/Wire.swift`). JSON fixtures in `shared/fixtures/` decoded by Swift `WireTests`; `transcript-upload-pa.json` = byte-for-byte-semantic output of `pa transcribe`'s pure pipeline (Swift `PaUploadFixtureTests` builds it; server unit + `api.e2e` ingest/summarize/search it). nil keys are **omitted** (no `meeting`, no `speaker`), not null — server must keep treating missing = null; `api.e2e.test.ts` `expectFixtureShape` asserts real responses keep fixture keys + JSON types (mutation-checked both sides). New device-facing response → add fixture + both checks.
 
