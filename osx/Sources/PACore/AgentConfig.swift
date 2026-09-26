@@ -6,9 +6,16 @@ public let bundleID = "com.bitofant.pa"
 public struct AgentConfig: Codable, Equatable, Sendable {
     /// Core Audio device UID (stable across reboots/replugs, unlike object ids). nil = system default input.
     public var micDeviceUID: String?
+    /// Set by `pa pair`; the bearer token itself lives in the Keychain, never here.
+    public var serverURL: String?
+    public var account: String?
+    public var deviceId: String?
 
-    public init(micDeviceUID: String? = nil) {
+    public init(micDeviceUID: String? = nil, serverURL: String? = nil, account: String? = nil, deviceId: String? = nil) {
         self.micDeviceUID = micDeviceUID
+        self.serverURL = serverURL
+        self.account = account
+        self.deviceId = deviceId
     }
 }
 

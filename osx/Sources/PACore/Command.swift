@@ -1,3 +1,5 @@
+import Foundation
+
 /// Parsed CLI invocation. Hand-rolled: too few flags to justify swift-argument-parser.
 public enum Command: Equatable, Sendable {
     case help
@@ -5,6 +7,11 @@ public enum Command: Equatable, Sendable {
     case mics
     /// nil = back to system default input.
     case setMic(String?)
+    /// deviceName nil = this Mac's name.
+    case pair(server: URL, account: String, deviceName: String?)
+    case status
+    /// Path to a `TranscriptUpload` JSON file.
+    case upload(String)
 }
 
 public struct TestCaptureOptions: Equatable, Sendable {
@@ -31,6 +38,12 @@ public let usage = """
           List input devices: UID<TAB>name<TAB>flags (default,selected). Interactive: osx/pick-mic.sh.
       pa set-mic (UID | --default)
           Persist the mic to record from (config.json in ~/Library/Application Support/com.bitofant.pa).
+      pa pair <server-url> <account> [--name DEVICE]
+          Pair with the server; shows a code to enter in the web UI, waits for approval. Token → Keychain.
+      pa status
+          Show pairing state (asks the server).
+      pa upload <transcript.json>
+          Upload a TranscriptUpload JSON file (shared/api.ts) to the paired server.
     """
 
 /// `args` excludes argv[0].
@@ -66,6 +79,30 @@ public func parseCommand(_ args: [String]) throws(UsageError) -> Command {
     case "set-mic":
         guard args.count == 2, !args[1].isEmpty else { throw UsageError("set-mic needs a device UID or --default") }
         return .setMic(args[1] == "--default" ? nil : args[1])
+    case "pair":
+        var pos: [String] = []
+        var name: String?
+        var it = args.dropFirst().makeIterator()
+        while let a = it.next() {
+            if a == "--name" {
+                guard let v = it.next()?.trimmingCharacters(in: .whitespaces), !v.isEmpty else { throw UsageError("--name needs a value") }
+                name = v
+            } else if a.hasPrefix("--") {
+                throw UsageError("unknown flag \(a)")
+            } else {
+                pos.append(a)
+            }
+        }
+        guard pos.count == 2 else { throw UsageError("pair needs <server-url> <account>") }
+        let account = pos[1].trimmingCharacters(in: .whitespaces).lowercased()
+        guard !account.isEmpty else { throw UsageError("account must not be empty") }
+        return .pair(server: try parseServerURL(pos[0]), account: account, deviceName: name)
+    case "status":
+        guard args.count == 1 else { throw UsageError("status takes no arguments") }
+        return .status
+    case "upload":
+        guard args.count == 2, !args[1].isEmpty else { throw UsageError("upload needs a transcript JSON file") }
+        return .upload(args[1])
     default:
         throw UsageError("unknown command \(sub)")
     }

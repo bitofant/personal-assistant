@@ -47,6 +47,13 @@ const json = (body: unknown, headers: Record<string, string> = {}) => ({
 });
 const post = (path: string, body: unknown, headers?: Record<string, string>) =>
   fetch(base + path, { method: "POST", ...json(body, headers) });
+// Swift decodes these fixtures; real responses must keep the same keys + JSON types (drift guard).
+const typeOf = (v: unknown) => (v === null ? "null" : Array.isArray(v) ? "array" : typeof v);
+function expectFixtureShape(name: string, actual: unknown): void {
+  const fixture = JSON.parse(readFileSync(`shared/fixtures/${name}`, "utf8")) as Record<string, unknown>;
+  const shape = (o: Record<string, unknown>) => Object.fromEntries(Object.keys(o).sort().map((k) => [k, typeOf(o[k])]));
+  expect(shape(actual as Record<string, unknown>)).toEqual(shape(fixture));
+}
 const cookieOf = (res: Response) => res.headers.get("set-cookie")!.split(";")[0];
 
 async function waitFor(cond: () => Promise<boolean>, ms = 5000): Promise<void> {
@@ -97,6 +104,7 @@ describe("API flow", () => {
     const res = await post("/api/devices/pair", { account: "alice", deviceName: "MacBook Pro" }, bearer);
     expect(res.status).toBe(202);
     const pair = (await res.json()) as PairResponse;
+    expectFixtureShape("pair-response.json", pair);
     deviceId = pair.deviceId;
     expect(pair.status).toBe("pending");
 
@@ -112,11 +120,17 @@ describe("API flow", () => {
     expect(ok.status).toBe(204);
     const me = (await (await fetch(`${base}/api/device/me`, { headers: bearer })).json()) as DeviceMeResponse;
     expect(me).toEqual({ deviceId, account: "alice", deviceName: "MacBook Pro", status: "active" });
+    expectFixtureShape("device-me.json", me);
+
+    const unknown = await post("/api/devices/pair", { account: "nobody", deviceName: "x" }, { authorization: `Bearer ${"e".repeat(43)}` });
+    expect(unknown.status).toBe(404);
+    expectFixtureShape("error.json", await unknown.json());
   });
 
   it("transcript ingest is idempotent and readable from the web", async () => {
     const first = await post("/api/device/transcripts", upload, bearer);
     expect(first.status).toBe(201);
+    expectFixtureShape("transcript-upload-response.json", await first.json());
     const again = await post("/api/device/transcripts", upload, bearer);
     expect(again.status).toBe(200);
     expect(await again.json()).toEqual({ id: "6f1c2b7e-3d4a-4e5f-9a8b-1c2d3e4f5a6b", created: false });

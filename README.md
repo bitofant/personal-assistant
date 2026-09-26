@@ -5,7 +5,7 @@ Self-hosted meeting assistant. A headless macOS agent records and transcribes yo
 - `server/`: Node/TypeScript backend (plain `node:http`, SQLite); also serves the web UI
 - `web/`: React + Vite frontend
 - `shared/`: wire types (`api.ts`) + JSON fixtures shared with the Swift client
-- `osx/`: headless Swift CLI `pa` (early spike: audio capture test)
+- `osx/`: headless Swift CLI `pa` (audio capture spike, plus pair/status/upload to the server)
 
 Status: early. The server supports:
 - web accounts (sign up, then an admin enables the account)
@@ -59,7 +59,7 @@ One-time setup: create a self-signed code-signing certificate named `PA Local Si
 
 ```sh
 cd osx
-swift test             # pure unit tests
+swift test             # pure unit tests (on the Linux dev box: osx/test-linux.sh, needs Docker)
 ./build.sh             # → build/PA.app (signed, headless)
 open -W --stdout $(tty) --stderr $(tty) build/PA.app --args test-capture --seconds 30
 ```
@@ -68,4 +68,12 @@ open -W --stdout $(tty) --stderr $(tty) build/PA.app --args test-capture --secon
 
 To record from a mic other than the system default, run `osx/pick-mic.sh`. It lists the input devices, lets you pick one by number, and saves the choice to `~/Library/Application Support/com.bitofant.pa/config.json`, where later runs pick it up. Choose `0` to go back to the system default. If the saved mic is unplugged, `pa` falls back to the system default.
 
-Launch it with `open` as shown. If you run the binary directly from a terminal, macOS attributes the permission prompts to the terminal app instead of PA.
+To pair the Mac with your server account (the account must be enabled in the server's `config.json`), run:
+
+```sh
+build/PA.app/Contents/MacOS/pa pair https://your-server alice   # shows a 6-digit code, waits
+```
+
+Sign in to the web UI, open Devices, and type in the code. `pa` stores the token in the Keychain and the server URL in `config.json`. `pa status` asks the server for the device's pairing state. `pa upload file.json` uploads a transcript in the `TranscriptUpload` format (see `shared/api.ts` and `shared/fixtures/transcript-upload.json`). Plain `http://` is only accepted for `localhost`.
+
+Launch `test-capture` with `open` as shown. If you run the binary directly from a terminal, macOS attributes the permission prompts to the terminal app instead of PA.
