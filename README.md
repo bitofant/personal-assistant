@@ -30,6 +30,7 @@ npm run dev            # http://localhost:4200, Vite HMR on the same port
 
 All configuration is in `config.json`. There are no env vars.
 
+- `server`: `{"host": "127.0.0.1", "port": 4200}`. `host` must be an IP address (not a hostname); see Production below.
 - `users`: usernames allowed to log in. Anyone can register, but an account is disabled until it's listed here. The server reloads `config.json` automatically, so you don't need to restart it. Removing a username logs that user out right away and blocks their devices.
 - `llm.providers`: OpenAI-compatible endpoints (local vLLM/llama.cpp, OpenRouter, …).
 - `llm.tasks`: routes `summary` / `search` / `embed` to a provider+model. If a task isn't routed, that feature is off. Jobs that need it wait in the queue until you route it.
@@ -44,6 +45,8 @@ All configuration is in `config.json`. There are no env vars.
 ./restart.sh           # rebuild frontend (atomic swap) + restart
 ./start.sh dev / ./stop.sh   # run the dev server outside systemd
 ```
+
+The server speaks plain HTTP and by default listens on `127.0.0.1` only (`server.host` in `config.json`). To reach it from elsewhere, put an HTTPS proxy or tunnel in front of it rather than binding it to `0.0.0.0`. Use `172.17.0.1` if the proxy is nginx in Docker. Changing `server.host` or `server.port` takes a restart. [`docs/remote-access.md`](docs/remote-access.md) covers giving the Mac permanent HTTPS access (Tailscale `serve` recommended; LAN-only nginx as the fallback).
 
 ### Backups
 

@@ -1,4 +1,5 @@
 import { readFileSync } from "node:fs";
+import { isIP } from "node:net";
 import { resolve } from "node:path";
 import type { LlmTaskName } from "../shared/api.js";
 
@@ -27,7 +28,8 @@ export const LLM_TASKS = ["summary", "search", "embed"] as const satisfies reado
 export type LlmTask = LlmTaskName;
 
 export interface Config {
-  server: { port: number };
+  /** host = IP literal to bind; default loopback (reverse proxy / tunnel in front). Restart to apply. */
+  server: { host: string; port: number };
   /** Usernames allowed to log in; registered accounts stay disabled until listed. */
   users: string[];
   llm: {
@@ -40,6 +42,8 @@ export interface Config {
 }
 
 export const DEFAULT_PORT = 4200;
+// Loopback: plain HTTP must never be reachable from the LAN by default.
+export const DEFAULT_HOST = "127.0.0.1";
 export const DEFAULT_BACKUP = { dir: "data/backups", keep: 14 } as const;
 export const CONFIG_PATH = resolve(process.cwd(), "config.json");
 
@@ -52,6 +56,10 @@ export function parseConfig(raw: unknown): Config {
   const port = server.port ?? DEFAULT_PORT;
   if (!Number.isInteger(port) || (port as number) < 1 || (port as number) > 65535)
     errors.push("server.port must be an integer 1-65535");
+  // IP literal only: a hostname like "localhost" may resolve to ::1 or 127.0.0.1 → ambiguous bind.
+  const host = typeof server.host === "string" ? server.host.trim().toLowerCase() : server.host ?? DEFAULT_HOST;
+  if (typeof host !== "string" || isIP(host) === 0)
+    errors.push('server.host must be an IP address, e.g. "127.0.0.1", "172.17.0.1" or "0.0.0.0" (no hostnames, no [brackets])');
 
   const users: string[] = [];
   if (obj.users !== undefined && !Array.isArray(obj.users))
@@ -117,11 +125,24 @@ export function parseConfig(raw: unknown): Config {
 
   if (errors.length) throw new Error(`Invalid config.json:\n  - ${errors.join("\n  - ")}`);
   return {
-    server: { port: port as number },
+    server: { host: host as string, port: port as number },
     users,
     llm: { providers, tasks },
     backup: { dir: (backupDir as string).trim(), keep: keep as number },
   };
+}
+
+const WILDCARDS = new Set(["0.0.0.0", "::"]);
+
+/** Bound on every interface → reachable from the network. */
+export function isWildcardHost(host: string): boolean {
+  return WILDCARDS.has(host);
+}
+
+/** URL a local client (tests, logs) can connect to; wildcard binds are reachable via loopback. */
+export function localUrl({ host, port }: Config["server"]): string {
+  const h = isWildcardHost(host) ? "127.0.0.1" : host;
+  return `http://${isIP(h) === 6 ? `[${h}]` : h}:${port}`;
 }
 
 export function loadConfig(path = CONFIG_PATH): Config {

@@ -36,6 +36,8 @@ fi
 
 echo "personal-assistant setup -> $CONFIG_FILE"
 PORT="$(ask "Server port" 4200)"
+# Loopback = only a local HTTPS proxy/tunnel reaches it (docs/remote-access.md).
+HOST="$(ask "Bind address (127.0.0.1; 172.17.0.1 = nginx in Docker; 0.0.0.0 = whole network, plain HTTP)" 127.0.0.1)"
 USERS="$(ask "Enabled usernames (comma-separated)" "")"
 
 echo
@@ -74,7 +76,7 @@ fi
 umask 077 # holds API keys
 cat > "$CONFIG_FILE" <<EOF
 {
-  "server": { "port": $PORT },
+  "server": { "host": $(json_str "$HOST"), "port": $PORT },
   "users": $(json_list "$USERS"),
   "llm": {
     "providers": [

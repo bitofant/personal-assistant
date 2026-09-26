@@ -60,6 +60,7 @@ The repo has a few components:
 7. **server: search** — v1 done (FTS5 keyword + date/attendee filters, see Server design → Search). Next v2: chunk+embed w/ `sqlite-vec`, hybrid merge, optional RAG answer — blocked on real transcripts (to judge retrieval) + an embedding model on the dev box. Pagination skipped: >50 hits → refine with filters.
 8. **osx: daemon (`pa run`)** — EventKit work calendars, meeting detection, auto capture → transcribe → persistent upload queue, raw-audio retention; `osx/install.sh` LaunchAgent; `os.Logger` + log file.
 9. **Speaker naming** — label speakers in web UI, per-user voice embeddings, match vs attendees; LLM name proposals never overwrite user labels.
+8a. **Remote access** — needed before `pa run`; plan in `docs/remote-access.md`. `server.host` bind done (see Config). Left: Tailscale `serve` (recommended; work-Mac policy decides) else LAN-only nginx vhost (`pa.riuna.com`, existing wildcard cert, bind `172.17.0.1` since nginx is in Docker, `client_max_body_size 25m`). Public Cloudflare Tunnel rejected for now (CF sees plaintext; no login rate limit). Caddy rejected (:443 = existing nginx).
 10. **Ops/polish** — per-transcript delete done (see Transcript delete); per-user export/delete (must also purge user from backups), device list/revoke UI polish. Backups done (see Server design → Backups).
 
 ## Commands
@@ -108,6 +109,7 @@ The repo has a few components:
 - **Config (settled):** `server/config.ts` `parseConfig` (pure, tested) validates + normalizes (usernames lowercased/trimmed, baseUrl trailing `/` stripped, empty apiKey → `null`); `loadConfig` = thin file wrapper. Unrouted `llm.tasks.X` = feature off, not an error. Task → unknown provider = startup error.
   - `llm.tasks.X` = route or list of routes → always normalized to non-empty `LlmRoute[]`; first = default, rest = user-selectable (summary). Duplicate route = error.
   - Route `contextTokens` (optional, integer ≥4096, else null = unknown) = model window, used only for summary chunking.
+  - `server.host` (default `127.0.0.1`) → `listen(port, host)`. IP literal only (hostname = ambiguous v4/v6 bind). Was all-interfaces before → plain HTTP on LAN; don't regress the default. `172.17.0.1` = nginx-in-Docker; wildcard logs a warning. Host/port need restart (reload warns). `localUrl` = connectable URL (logs + `health.e2e`). All modes verified live.
 - **Static serving:** `resolveStaticPath` must stay `startsWith(root + sep)` (bare `startsWith(root)` lets `dist/web.prev` through); traversal → SPA fallback, never a file outside root.
 - **Toolchain versions:** TypeScript 7 (native `tsc`), Vite 8, React 19, Vitest 4, Node 25 on dev box.
 
