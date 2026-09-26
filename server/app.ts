@@ -5,6 +5,7 @@ import type {
   InstructionsResponse,
   LlmStatusResponse,
   MeResponse,
+  SearchResponse,
   SettingsResponse,
   SignupResponse,
   SummarizeResponse,
@@ -20,6 +21,7 @@ import { Store } from "./db.js";
 import { jobState, JobQueue, JobRunner, type JobHandler, type RunnerOptions } from "./jobs.js";
 import { deleteInstruction, listInstructions, listSeries, parseInstructionTarget, parseInstructionText, putInstruction } from "./instructions.js";
 import { createLlm, routeChoices, type Llm } from "./llm.js";
+import { parseSearchRequest, searchTranscripts } from "./search.js";
 import { effectiveChoice, getSummaryLlm, parseRouteChoice, setSummaryLlm } from "./settings.js";
 import { getSummary, SUMMARIZE_JOB, summarizeHandler, type SummarizePayload } from "./summaries.js";
 import { bearerToken, HttpError, isRecord, readJson, sendError, sendJson, sendNoContent } from "./http.js";
@@ -164,6 +166,13 @@ export function createApp(opts: AppOptions): App {
     if (!transcriptExists(store.user(user.id), id)) throw new HttpError(404, "No such transcript.");
     const llmPick = parseRouteChoice(isRecord(value) ? value.llm : null, routeChoices(opts.getConfig(), "summary"));
     sendJson(res, { summaryJob: jobState(enqueueSummary(user.id, id, { llm: llmPick })) } satisfies SummarizeResponse, 202);
+  });
+
+  // ---- search ----
+  route("GET", "/api/search", ({ req, res }) => {
+    const user = auth.requireUser(req);
+    const { terms, limit } = parseSearchRequest(new URL(req.url ?? "/", "http://x").searchParams);
+    sendJson(res, searchTranscripts(store.user(user.id), terms, limit, devices.names(user.id)) satisfies SearchResponse);
   });
 
   function summaryOf(userId: number, transcriptId: string): TranscriptSummaryResponse {

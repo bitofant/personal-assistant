@@ -156,14 +156,10 @@ interface Row {
   updated_at: number;
 }
 
-export function listTranscripts(db: Db, deviceNames: Map<string, string>): TranscriptListItem[] {
-  const rows = db
-    .prepare(
-      `SELECT id, device_id, started_at, ended_at, title, calendar_name, attendee_count, segment_count
-       FROM transcripts ORDER BY started_at DESC`,
-    )
-    .all() as Row[];
-  return rows.map((r) => ({
+const LIST_COLUMNS = "id, device_id, started_at, ended_at, title, calendar_name, attendee_count, segment_count";
+
+function toListItem(r: Row, deviceNames: Map<string, string>): TranscriptListItem {
+  return {
     id: r.id,
     title: r.title,
     startedAt: r.started_at,
@@ -172,7 +168,20 @@ export function listTranscripts(db: Db, deviceNames: Map<string, string>): Trans
     attendeeCount: r.attendee_count,
     segmentCount: r.segment_count,
     deviceName: deviceNames.get(r.device_id) ?? null,
-  }));
+  };
+}
+
+export function listTranscripts(db: Db, deviceNames: Map<string, string>): TranscriptListItem[] {
+  const rows = db.prepare(`SELECT ${LIST_COLUMNS} FROM transcripts ORDER BY started_at DESC`).all() as Row[];
+  return rows.map((r) => toListItem(r, deviceNames));
+}
+
+/** List items for canonical ids, keyed by id (missing ids absent). */
+export function transcriptListItems(db: Db, ids: string[], deviceNames: Map<string, string>): Map<string, TranscriptListItem> {
+  const rows = db
+    .prepare(`SELECT ${LIST_COLUMNS} FROM transcripts WHERE id IN (SELECT value FROM json_each(?))`)
+    .all(JSON.stringify(ids)) as Row[];
+  return new Map(rows.map((r) => [r.id, toListItem(r, deviceNames)]));
 }
 
 /** `id` must already be canonical (lowercase). */

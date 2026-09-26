@@ -131,7 +131,61 @@ export const USER_MIGRATIONS = [
   );
   ALTER TABLE summaries ADD COLUMN meeting_type_source TEXT;
   `,
+  // Keyword search: one row per segment + one meta row (title, attendees) per transcript, kept in sync from
+  // transcripts.data by triggers (no code path can forget to reindex), backfilled here.
+  // External-content FTS5 so reindexing deletes by indexed transcript_id, not an FTS full scan.
+  `
+  CREATE TABLE search_rows (
+    id INTEGER PRIMARY KEY,
+    transcript_id TEXT NOT NULL REFERENCES transcripts(id) ON DELETE CASCADE,
+    seg INTEGER,
+    start REAL,
+    speaker TEXT,
+    title TEXT,
+    attendees TEXT,
+    text TEXT
+  );
+  CREATE INDEX search_rows_transcript ON search_rows(transcript_id);
+  CREATE VIRTUAL TABLE search_fts USING fts5(
+    title, attendees, text,
+    content = 'search_rows', content_rowid = 'id',
+    tokenize = 'unicode61 remove_diacritics 2'
+  );
+  CREATE TRIGGER search_rows_ai AFTER INSERT ON search_rows BEGIN
+    INSERT INTO search_fts (rowid, title, attendees, text) VALUES (new.id, new.title, new.attendees, new.text);
+  END;
+  CREATE TRIGGER search_rows_ad AFTER DELETE ON search_rows BEGIN
+    INSERT INTO search_fts (search_fts, rowid, title, attendees, text) VALUES ('delete', old.id, old.title, old.attendees, old.text);
+  END;
+  CREATE TRIGGER transcripts_search_ai AFTER INSERT ON transcripts BEGIN
+    ${indexTranscriptSql("new", "")}
+  END;
+  CREATE TRIGGER transcripts_search_au AFTER UPDATE OF data, title ON transcripts
+  WHEN old.data IS NOT new.data OR old.title IS NOT new.title BEGIN
+    DELETE FROM search_rows WHERE transcript_id = old.id;
+    ${indexTranscriptSql("new", "")}
+  END;
+  ${indexTranscriptSql("t", "FROM transcripts t")}
+  `,
 ] as const;
+
+// Part of shipped migration 4 (append-only): changing what's indexed = new migration that drops + rebuilds.
+// `t` = transcript row ref ("new" in triggers); `from` = FROM clause for backfill ("" in triggers).
+// Speaker labels deliberately not indexed: diarization labels ("Speaker 2") would match everywhere.
+function indexTranscriptSql(t: string, from: string): string {
+  const people = `(SELECT group_concat(trim(coalesce(json_extract(p.v, '$.name'), '') || ' ' || coalesce(json_extract(p.v, '$.email'), '')), ' ; ')
+      FROM (SELECT json_extract(${t}.data, '$.meeting.organizer') AS v
+            UNION ALL SELECT value FROM json_each(${t}.data, '$.meeting.attendees')) p
+      WHERE p.v IS NOT NULL)`;
+  const segFrom = from ? `${from}, json_each(${t}.data, '$.segments') s` : `FROM json_each(${t}.data, '$.segments') s`;
+  return `
+    INSERT INTO search_rows (transcript_id, title, attendees)
+      SELECT id, title, attendees FROM (SELECT ${t}.id AS id, ${t}.title AS title, ${people} AS attendees ${from})
+      WHERE title IS NOT NULL OR attendees IS NOT NULL;
+    INSERT INTO search_rows (transcript_id, seg, start, speaker, text)
+      SELECT ${t}.id, s.key, json_extract(s.value, '$.start'), json_extract(s.value, '$.speaker'), json_extract(s.value, '$.text')
+      ${segFrom};`;
+}
 
 /** Opens data/app.db and lazily caches data/users/<id>.db handles. */
 export class Store {

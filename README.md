@@ -14,10 +14,9 @@ Status: early. The server supports:
 - a web UI to browse transcripts
 - LLM summaries of uploaded transcripts, made in a background job queue and shown on the transcript page (with progress, retry-after-outage and failure status, and a re-summarize button); `GET /api/llm/status` shows whether each LLM task is reachable. Jobs of disabled users wait until they're re-enabled.
 - summary settings page: pick the summary model (e.g. local or a paid remote one, from those the admin configured) and write custom instructions per recurring series, per meeting type, or as your default. The most specific ones win. The meeting type (1:1, stand-up, interview, external, meeting, ad-hoc) comes from the calendar event: no event means ad-hoc, title keywords decide next, and 2 attendees means 1:1. When those rules can't tell, the LLM classifies the meeting.
+- keyword search (search box in the nav bar, `GET /api/search?q=`) over titles, attendee names/emails and what was said. Every word must appear somewhere in the meeting; words match as prefixes, `"quoted phrases"` match exactly, and case and accents are ignored. Results show the best matching lines highlighted; click a timestamp to jump to that line. Semantic (embedding) search isn't built yet; see `AGENTS.md`.
 
-Search isn't built yet. See `AGENTS.md` for the design and roadmap.
-
-Data lives in `data/` (gitignored): `app.db` holds accounts, sessions, devices and the job queue, and `users/<id>.db` holds one user's transcripts, summaries, custom instructions and settings.
+Data lives in `data/` (gitignored): `app.db` holds accounts, sessions, devices and the job queue, and `users/<id>.db` holds one user's transcripts, search index, summaries, custom instructions and settings.
 
 ## Server setup (Linux)
 
