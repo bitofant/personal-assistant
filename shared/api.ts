@@ -204,8 +204,8 @@ export interface TextPart {
 /** Descriptions + built-in instructions: `shared/instructions.ts`. */
 export type MeetingType = "1on1" | "standup" | "interview" | "external" | "meeting" | "adhoc";
 
-/** rule = metadata/title; llm = classified by the LLM; fallback = LLM gave no usable answer → "meeting". */
-export type MeetingTypeSource = "rule" | "llm" | "fallback";
+/** rule = metadata/title; series = reused from an earlier meeting of the same recurring series; llm = classified by the LLM; fallback = LLM gave no usable answer → "meeting". */
+export type MeetingTypeSource = "rule" | "series" | "llm" | "fallback";
 
 export interface TranscriptSummary {
   /** Markdown. */

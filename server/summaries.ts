@@ -65,10 +65,18 @@ export interface Classification {
   source: MeetingTypeSource;
 }
 
-/** Rule first; else LLM. Outage (retryable) propagates so the job waits; bad/unusable reply → "meeting". */
-export async function classifyMeeting(t: TranscriptUpload, llm: Llm, opts: { route?: LlmRouteRef | null; signal?: AbortSignal } = {}): Promise<Classification> {
+/**
+ * Rule > series type (earlier occurrence, see seriesMeetingType) > LLM. Outage (retryable) propagates so the job waits;
+ * bad/unusable reply → "meeting".
+ */
+export async function classifyMeeting(
+  t: TranscriptUpload,
+  llm: Llm,
+  opts: { route?: LlmRouteRef | null; signal?: AbortSignal; seriesType?: MeetingType | null } = {},
+): Promise<Classification> {
   const rule = classifyByRule(t);
   if (rule) return { type: rule, source: "rule" };
+  if (opts.seriesType) return { type: opts.seriesType, source: "series" };
   try {
     const r = await llm.chat("summary", buildClassifyPrompt(t), { temperature: 0, route: opts.route, signal: opts.signal });
     const type = parseClassifyReply(r.text);
@@ -425,6 +433,22 @@ export function getSummary(db: Db, transcriptId: string): TranscriptSummary | nu
   };
 }
 
+/**
+ * Type of the latest other summarized occurrence of a recurring series → consistent type (+ instructions) across the
+ * series, no classify call. Skips fallback/unknown-source rows so one bad guess isn't copied forward.
+ */
+export function seriesMeetingType(db: Db, seriesId: string | null, excludeTranscriptId: string): MeetingType | null {
+  if (!seriesId) return null;
+  const r = db
+    .prepare(
+      `SELECT s.meeting_type FROM summaries s JOIN transcripts t ON t.id = s.transcript_id
+       WHERE t.series_id = ? AND t.id != ? AND s.meeting_type_source IN ('rule', 'series', 'llm')
+       ORDER BY t.started_at DESC LIMIT 1`,
+    )
+    .get(seriesId, excludeTranscriptId.toLowerCase()) as { meeting_type: MeetingType } | undefined;
+  return r?.meeting_type ?? null;
+}
+
 function loadTranscript(db: Db, id: string): { upload: TranscriptUpload; updatedAt: number } | null {
   const r = db.prepare("SELECT data, updated_at FROM transcripts WHERE id = ?").get(id) as { data: string; updated_at: number } | undefined;
   return r ? { upload: JSON.parse(r.data) as TranscriptUpload, updatedAt: r.updated_at } : null;
@@ -444,8 +468,9 @@ export function summarizeHandler(deps: { store: Store; llm: Llm; now: () => numb
     const t = loadTranscript(db, job.key);
     if (!t) return;
     const route = toRouteRef((job.payload as Partial<SummarizePayload> | null)?.llm) ?? getSummaryLlm(db);
-    const { type: meetingType, source: meetingTypeSource } = await classifyMeeting(t.upload, deps.llm, { route, signal });
     const seriesId = t.upload.meeting?.seriesId ?? null;
+    const seriesType = seriesMeetingType(db, seriesId, t.upload.id);
+    const { type: meetingType, source: meetingTypeSource } = await classifyMeeting(t.upload, deps.llm, { route, signal, seriesType });
     const instructions = resolveInstructions(meetingType, seriesId, applicableInstructions(listInstructions(db), meetingType, seriesId));
     const r = await summarizeTranscript(t.upload, instructions, deps.llm, { route, signal, contextTokens: deps.llm.contextTokens("summary", route) });
     saveSummary(

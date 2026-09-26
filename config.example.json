@@ -14,5 +14,6 @@
       "search": { "provider": "local", "model": "qwen3-32b" },
       "embed": { "provider": "local", "model": "bge-m3" }
     }
-  }
+  },
+  "backup": { "dir": "data/backups", "keep": 14 }
 }

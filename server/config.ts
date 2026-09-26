@@ -35,9 +35,12 @@ export interface Config {
     /** Non-empty; first = default, others = user-selectable alternatives. Unrouted task = feature disabled (fail safe), not an error. */
     tasks: Partial<Record<LlmTask, LlmRoute[]>>;
   };
+  /** `npm run backup` (systemd timer): snapshots of data/*.db. dir relative to the repo; keep = newest N snapshots. */
+  backup: { dir: string; keep: number };
 }
 
 export const DEFAULT_PORT = 4200;
+export const DEFAULT_BACKUP = { dir: "data/backups", keep: 14 } as const;
 export const CONFIG_PATH = resolve(process.cwd(), "config.json");
 
 /** Validate + normalize parsed config.json. Throws with a readable message. */
@@ -105,8 +108,20 @@ export function parseConfig(raw: unknown): Config {
     tasks[key as LlmTask] = routes;
   }
 
+  const rawBackup = isRecord(obj.backup) ? obj.backup : {};
+  if (obj.backup !== undefined && !isRecord(obj.backup)) errors.push("backup must be an object");
+  const backupDir = rawBackup.dir ?? DEFAULT_BACKUP.dir;
+  if (typeof backupDir !== "string" || !backupDir.trim()) errors.push("backup.dir must be a non-empty string");
+  const keep = rawBackup.keep ?? DEFAULT_BACKUP.keep;
+  if (!Number.isInteger(keep) || (keep as number) < 1) errors.push("backup.keep must be an integer ≥ 1");
+
   if (errors.length) throw new Error(`Invalid config.json:\n  - ${errors.join("\n  - ")}`);
-  return { server: { port: port as number }, users, llm: { providers, tasks } };
+  return {
+    server: { port: port as number },
+    users,
+    llm: { providers, tasks },
+    backup: { dir: (backupDir as string).trim(), keep: keep as number },
+  };
 }
 
 export function loadConfig(path = CONFIG_PATH): Config {

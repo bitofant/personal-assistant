@@ -13,7 +13,7 @@ Status: early. The server supports:
 - transcript upload from a paired device
 - a web UI to browse transcripts
 - LLM summaries of uploaded transcripts, made in a background job queue and shown on the transcript page (with progress, retry-after-outage and failure status, and a re-summarize button); `GET /api/llm/status` shows whether each LLM task is reachable. Jobs of disabled users wait until they're re-enabled.
-- summary settings page: pick the summary model (e.g. local or a paid remote one, from those the admin configured) and write custom instructions per recurring series, per meeting type, or as your default. The most specific ones win. The meeting type (1:1, stand-up, interview, external, meeting, ad-hoc) comes from the calendar event: no event means ad-hoc, title keywords decide next, and 2 attendees means 1:1. When those rules can't tell, the LLM classifies the meeting.
+- summary settings page: pick the summary model (e.g. local or a paid remote one, from those the admin configured) and write custom instructions per recurring series, per meeting type, or as your default. The most specific ones win. The meeting type (1:1, stand-up, interview, external, meeting, ad-hoc) comes from the calendar event: no event means ad-hoc, title keywords decide next, and 2 attendees means 1:1. When those rules can't tell, a recurring meeting reuses the type of its earlier occurrences, and otherwise the LLM classifies it.
 - keyword search (search box in the nav bar, `GET /api/search?q=`) over titles, attendee names/emails and what was said. Every word must appear somewhere in the meeting; words match as prefixes, `"quoted phrases"` match exactly, and case and accents are ignored. Results show the best matching lines highlighted; click a timestamp to jump to that line. Filter by date range and by people (name or email, comma-separated; all must have attended). Filters work without a query too, listing matching meetings newest first. Semantic (embedding) search isn't built yet; see `AGENTS.md`.
 
 Data lives in `data/` (gitignored): `app.db` holds accounts, sessions, devices and the job queue, and `users/<id>.db` holds one user's transcripts, search index, summaries, custom instructions and settings.
@@ -35,6 +35,7 @@ All configuration is in `config.json`. There are no env vars.
 - `llm.tasks`: routes `summary` / `search` / `embed` to a provider+model. If a task isn't routed, that feature is off. Jobs that need it wait in the queue until you route it.
   - A task can also take a list of routes. The first is the default. For `summary`, each user can pick any listed route in the web UI, e.g. `[{local}, {openrouter}]` to offer a paid remote model. Users can only pick routes you list here.
   - Optional `contextTokens` per route = the model's context window (vLLM: `max_model_len` in `/v1/models`). Meetings too long for it are summarized in parts (notes per part, then one combined summary). Without it, the whole transcript is tried first and split only if the model replies that it's too long.
+- `backup` (optional): `{"dir": "data/backups", "keep": 14}`, see Backups below.
 
 ### Production (systemd user service)
 
@@ -43,6 +44,14 @@ All configuration is in `config.json`. There are no env vars.
 ./restart.sh           # rebuild frontend (atomic swap) + restart
 ./start.sh dev / ./stop.sh   # run the dev server outside systemd
 ```
+
+### Backups
+
+`npm run backup` writes a consistent snapshot of every database to `backup.dir/<yyyyMMdd-HHmmss>Z/` (`app.db` + `users/<id>.db`) and keeps the newest `backup.keep` snapshots. It's safe to run while the server is running. `./install-service.sh` also installs a systemd timer that runs it nightly at 03:30 (and catches up after downtime). Check it with `systemctl --user list-timers` and `journalctl --user -u personal-assistant-backup`.
+
+The default `data/backups` is on the same disk as the data, so it guards against mistakes and corruption but not against losing the disk. Point `backup.dir` at another disk or a synced folder for that.
+
+To restore: `./stop.sh`, move `data/` aside, copy the snapshot's `app.db` and `users/` into a fresh `data/`, then start again. Each snapshot file is self-contained (no `-wal` files needed).
 
 ## Development
 
@@ -55,6 +64,8 @@ npm run typecheck      # must pass before a PR
 ## macOS agent (`osx/`)
 
 Requirements: Apple Silicon, macOS 26, Command Line Tools (`xcode-select --install`). You don't need Xcode.
+
+First time on a Mac? Follow `osx/CHECKLIST.md` step by step (build → capture → ASR bench → pair → transcribe + upload).
 
 One-time setup: create a self-signed code-signing certificate named `PA Local Signing`. In Keychain Access, go to Certificate Assistant → Create a Certificate…, then pick Identity Type "Self Signed Root" and Certificate Type "Code Signing". Permission grants stick to this signing identity, so they survive rebuilds.
 

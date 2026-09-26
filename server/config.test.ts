@@ -8,7 +8,17 @@ describe("parseConfig", () => {
       server: { port: DEFAULT_PORT },
       users: [],
       llm: { providers: [], tasks: {} },
+      backup: { dir: "data/backups", keep: 14 },
     });
+  });
+
+  it("backup: dir + keep, validated", () => {
+    expect(parseConfig({ backup: { dir: " /mnt/nas/pa ", keep: 30 } }).backup).toEqual({ dir: "/mnt/nas/pa", keep: 30 });
+    expect(parseConfig({ backup: { keep: 3 } }).backup).toEqual({ dir: "data/backups", keep: 3 });
+    const bad = () => parseConfig({ backup: { dir: "", keep: 0 } });
+    expect(bad).toThrow(/backup.dir must be/);
+    expect(bad).toThrow(/backup.keep must be/);
+    expect(() => parseConfig({ backup: "x" })).toThrow(/backup must be an object/);
   });
 
   it("accepts config.example.json", () => {
