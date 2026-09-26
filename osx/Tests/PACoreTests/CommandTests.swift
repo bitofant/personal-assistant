@@ -1,3 +1,4 @@
+import Foundation
 import Testing
 @testable import PACore
 
@@ -34,6 +35,21 @@ import Testing
         #expect(throws: UsageError.self) { try parseCommand(["set-mic"]) }
         #expect(throws: UsageError.self) { try parseCommand(["set-mic", "a", "b"]) }
         #expect(throws: UsageError.self) { try parseCommand(["mics", "x"]) }
+    }
+
+    @Test func pairStatusUpload() throws {
+        let s = URL(string: "https://pa.example.com")!
+        #expect(try parseCommand(["pair", "https://pa.example.com/", " Alice "]) == .pair(server: s, account: "alice", deviceName: nil))
+        #expect(try parseCommand(["pair", "--name", "Work Mac", "https://pa.example.com", "alice"])
+            == .pair(server: s, account: "alice", deviceName: "Work Mac"))
+        #expect(throws: UsageError.self) { try parseCommand(["pair", "https://pa.example.com"]) }
+        #expect(throws: UsageError.self) { try parseCommand(["pair", "http://pa.example.com", "alice"]) }
+        #expect(throws: UsageError.self) { try parseCommand(["pair", "https://pa.example.com", "alice", "--name"]) }
+        #expect(throws: UsageError.self) { try parseCommand(["pair", "https://pa.example.com", "alice", "--bogus"]) }
+        #expect(try parseCommand(["status"]) == .status)
+        #expect(throws: UsageError.self) { try parseCommand(["status", "x"]) }
+        #expect(try parseCommand(["upload", "t.json"]) == .upload("t.json"))
+        #expect(throws: UsageError.self) { try parseCommand(["upload"]) }
     }
 
     @Test func rejectsBadInput() {

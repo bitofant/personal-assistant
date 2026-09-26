@@ -14,6 +14,12 @@ struct PA {
                 try listMics()
             case .setMic(let uid):
                 try setMic(uid)
+            case .pair(let server, let account, let deviceName):
+                try await pair(server: server, account: account, deviceName: deviceName)
+            case .status:
+                try await status()
+            case .upload(let path):
+                try await upload(path)
             }
         } catch let e as UsageError {
             eprint("\(e)\n\n\(usage)")

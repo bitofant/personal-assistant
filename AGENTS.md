@@ -41,18 +41,19 @@ The repo has a few components:
 - Server scaffold (settled): config loading/validation, `GET /api/health`, static/Vite serving, systemd scripts.
 - Server (built): SQLite store, web auth, device pairing + approval, transcript ingest/list/detail, minimal web UI, LLM client + job queue, summaries (+ web view with job status), custom instructions + LLM meeting-type classify + per-user summary model (settings page), search v1 (FTS5 keyword + date/attendee filters + web page).
 - osx: `pa test-capture` spike runs on the Mac; Zoom tap + mic (no VP) record (verified live).
+- osx: `pa pair` / `pa status` / `pa upload <json>` built; PACore + CLI logic verified live on Linux vs scratch server (Keychain stubbed); not yet run on the Mac.
 - Everything else below = planned, not built.
 - Default port **4200** (4000/4100 taken on the dev box by other services).
 - Monorepo: `server/` (Node backend), `web/` (React frontend), `shared/` (TS wire types), `osx/` (headless Swift CLI).
-- Linux dev box can't build `osx/`; osx work is built/tested on the Mac.
+- Linux dev box can't build the `pa` target (Core Audio/Security); PACore is pure Foundation → builds + tests on Linux via `osx/test-linux.sh` (verified live). Keep PACore Linux-portable.
 - `README.md` = user/contributor onboarding; `AGENTS.md` = agent guidance. Keep both current.
 
 ## Roadmap (next up, in order)
 - Order = riskiest unknowns first, then thinnest end-to-end slice (Mac audio → server transcript), then value-add. Tick off / reorder as done.
 1. **osx: finish `pa test-capture` on the Mac** — Zoom tap + mic done (verified live); still: global tap (now the only mode) live run, listen to WAVs. Record findings "verified live".
 2. **osx: transcription spike** — FluidAudio Parakeet v3 + diarization on spike WAVs → `[{start,end,speaker,text}]`; check speed/accuracy. Behind `Transcriber` protocol.
-3. **osx: `pa pair` / `pa status`** — Keychain token, app-support `config.json`, poll `/api/device/me`; Swift `Codable` mirrors of `shared/api.ts` + fixture decode tests.
-4. **osx: `pa upload <wav-dir>`** — manual transcribe + upload → first real end-to-end transcript on server.
+3. **osx: `pa pair` / `pa status`** — built (see osx tech → Server client); left: first run on the Mac (Keychain, `Host` name, real server over https).
+4. **osx: `pa upload <wav-dir>`** — `pa upload <json>` done; left: transcribe WAVs (item 2) → `TranscriptUpload` → first real end-to-end transcript.
 5. ~~**server: LLM client + job queue**~~ — done (see Server design → LLM / Background jobs).
 6. **server: summaries** — built: summarize job, rule + LLM classify, built-in + custom instructions (series > type > default), per-user model pick, settings page. Left: long-transcript chunking (map-reduce) if context overflows; maybe "instructions changed" stale flag; reuse series' type instead of re-classifying.
 7. **server: search** — v1 done (FTS5 keyword + date/attendee filters, see Server design → Search). Next v2: chunk+embed w/ `sqlite-vec`, hybrid merge, optional RAG answer — blocked on real transcripts (to judge retrieval) + an embedding model on the dev box. Pagination skipped: >50 hits → refine with filters.
@@ -64,7 +65,7 @@ The repo has a few components:
 - `npm run dev` (tsx watch + Vite middleware), `npm run build` (frontend → `dist/web`), `npm start`.
 - `npm test`, `npm run test:watch`, `npm run test:e2e`, `npm run typecheck`.
 - `./config-gen.sh`, `./install-service.sh`, `./start.sh [dev]`, `./stop.sh`, `./restart.sh`, `./rebuild.sh`.
-- osx: `swift build` / `swift test` in `osx/`; `osx/build.sh [identity]` → signed `osx/build/PA.app`; `osx/install.sh` (LaunchAgent, planned); `osx/pick-mic.sh` (numbered mic picker).
+- osx: `swift build` / `swift test` in `osx/`; `osx/test-linux.sh` = PACore tests on the Linux dev box (Docker `swift:6.1`, drops `pa` target); `osx/build.sh [identity]` → signed `osx/build/PA.app`; `osx/install.sh` (LaunchAgent, planned); `osx/pick-mic.sh` (numbered mic picker).
 - Run bundle: `open -W --stdout $(tty) --stderr $(tty) osx/build/PA.app --args test-capture`.
 
 ## Working practices
@@ -177,7 +178,7 @@ The repo has a few components:
   - Web filters: hash holds local days (`from`/`to` inclusive); `searchApiPath` converts to [local midnight, day-after-`to` midnight) instants — server never guesses the user's zone. Nav box keeps active filters.
   - Web: nav `SearchBox` → `#/search?q=`; `web/routes.ts` = only hash builder/parser (unit-tested); `#/t/<id>/s/<n>` scrolls to + highlights segment. Verified live in headless Chromium.
 - **Search v2 (planned, not built):** hybrid — FTS5 + `sqlite-vec` (embeddings of ~1-min chunks) → merge/rerank → optional LLM answer citing chunks (RAG).
-- **Wire contract:** `shared/api.ts` is source of truth; Swift `Codable` mirrors it. JSON fixtures in `shared/fixtures/` decoded by tests on both sides to catch drift.
+- **Wire contract:** `shared/api.ts` is source of truth; Swift `Codable` mirrors it (`osx/Sources/PACore/Wire.swift`). JSON fixtures in `shared/fixtures/` decoded by Swift `WireTests`; `api.e2e.test.ts` `expectFixtureShape` asserts real responses keep fixture keys + JSON types (mutation-checked both sides). New device-facing response → add fixture + both checks.
 
 ## osx tech (decisions)
 - **Headless — no UI.** Swift 6 CLI `pa`; runs as a background process. Swift because audio taps, EventKit, CoreML ASR are native-only.
@@ -192,7 +193,7 @@ The repo has a few components:
   - **Sign with a stable self-signed code-signing cert** (Keychain Access → Certificate Assistant). Ad-hoc signing changes identity every build → TCC re-prompts/stale grants. No paid Apple dev account.
   - No hardened runtime (would need audio-input entitlement; no notarization anyway).
   - ⚠️ TCC attributes to the *responsible* process: bare `PA.app/Contents/MacOS/pa` from Terminal → grants go to Terminal. Launch via `open`/launchd. (Expected; confirm in spike.)
-- **CLI subcommands:** `pa pair <server> <account>` (prompts, shows pairing code), `pa status`, `pa run` (daemon mode), `pa test-capture` (spike, below), `pa mics` / `pa set-mic (UID|--default)` (built).
+- **CLI subcommands:** `pa pair <server> <account> [--name D]`, `pa status`, `pa upload <json>`, `pa run` (daemon mode), `pa test-capture` (spike, below), `pa mics` / `pa set-mic (UID|--default)` (built).
 - **Mic selection (built, device switch not verified live):** persisted as Core Audio device **UID** (stable; object ids aren't) in app-support `config.json` `micDeviceUID`; nil/unplugged → system default.
   - `pa mics` = TSV `uid\tname\tflags` (pure `formatMicLine`), parsed by bash-3.2 `osx/pick-mic.sh`. Bare binary OK: enumeration needs no TCC.
   - Applied via `kAudioOutputUnitProperty_CurrentDevice` on inputNode's unit; device read back and printed (ground truth).
@@ -217,7 +218,12 @@ The repo has a few components:
   - Fallback/alt: Apple `SpeechAnalyzer`/`SpeechTranscriber` (macOS 26); WhisperKit if accuracy on a language demands it.
 - **Speaker ID:** FluidAudio diarization on system stream → clusters. Naming: per-user voice embeddings of known speakers (labeled in web UI), matched against calendar attendees; unknown → `Speaker N`. Server-side LLM may propose names from context; never overwrite a user label.
 - **Storage/queue:** audio + pending uploads in `~/Library/Application Support/<bundle id>/`; persistent upload queue with retry (offline-safe). Raw audio deleted after successful upload (configurable retention).
-- **Secrets:** bearer token in Keychain; non-secret settings (server URL, work calendars, retention) in `~/Library/Application Support/<bundle id>/config.json`.
+- **Server client (built):** PACore `ApiClient.swift` = pure `parseServerURL` (https unless loopback), `newDeviceToken` (32 random bytes base64url), request builders (`ApiRequest`), `decodeResponse` (→ `ApiError` w/ server `message`); `pa/Server.swift` = URLSession only.
+  - `pa pair`: same server+account → reuses Keychain token (server idempotent, re-shows code); else new token. Saves token + config right after 202, polls `/api/device/me` 3s; 401 = wrong code/expired → re-pair.
+  - ⚠️ `fflush(nil)` after the pairing prompt: stdout block-buffered when not a TTY → code only shown at exit (verified live). Swift 6 can't touch the `stdout` global.
+  - Code shown as `123 456`; server strips whitespace.
+  - Swift encoder omits nil keys; server treats missing = null (verified live).
+- **Secrets:** bearer token in Keychain (generic password, service = bundle id, account `device-token`); non-secret settings (server URL, work calendars, retention) in `~/Library/Application Support/<bundle id>/config.json`.
 - Networking: `URLSession`, HTTPS only (except localhost).
 - Logging: `os.Logger` (subsystem = bundle id) + log file in `~/Library/Logs/`.
 - Tests: Swift Testing (`swift test`); decode `shared/fixtures/` JSON.

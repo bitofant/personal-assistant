@@ -4,7 +4,7 @@ import Testing
 
 @Suite struct AgentConfigTests {
     @Test func roundTrip() throws {
-        let c = AgentConfig(micDeviceUID: "BuiltInMicrophoneDevice")
+        let c = AgentConfig(micDeviceUID: "BuiltInMicrophoneDevice", serverURL: "https://pa.example.com", account: "alice", deviceId: "d1")
         #expect(try parseAgentConfig(encodeAgentConfig(c)) == c)
     }
 
