@@ -1,15 +1,37 @@
 import { describe, expect, it } from "vitest";
 import { readFileSync } from "node:fs";
-import { DEFAULT_PORT, parseConfig } from "./config.js";
+import { DEFAULT_HOST, DEFAULT_PORT, isWildcardHost, localUrl, parseConfig } from "./config.js";
 
 describe("parseConfig", () => {
   it("applies defaults to an empty object", () => {
     expect(parseConfig({})).toEqual({
-      server: { port: DEFAULT_PORT },
+      server: { host: DEFAULT_HOST, port: DEFAULT_PORT },
       users: [],
       llm: { providers: [], tasks: {} },
       backup: { dir: "data/backups", keep: 14 },
     });
+  });
+
+  it("server.host: loopback by default, IP literals only, normalized", () => {
+    expect(DEFAULT_HOST).toBe("127.0.0.1");
+    expect(parseConfig({ server: { port: 4300 } }).server).toEqual({ host: "127.0.0.1", port: 4300 });
+    expect(parseConfig({ server: { host: " 172.17.0.1 " } }).server.host).toBe("172.17.0.1");
+    expect(parseConfig({ server: { host: "0.0.0.0" } }).server.host).toBe("0.0.0.0");
+    expect(parseConfig({ server: { host: "::1" } }).server.host).toBe("::1");
+    expect(parseConfig({ server: { host: "FE80::1" } }).server.host).toBe("fe80::1");
+    expect(parseConfig({ server: { host: null } }).server.host).toBe(DEFAULT_HOST);
+    for (const host of ["localhost", "example.com", "[::1]", "", "127.0.0.1:4200", 127])
+      expect(() => parseConfig({ server: { host } }), String(host)).toThrow(/server.host must be an IP address/);
+  });
+
+  it("localUrl: connectable URL for the bound address", () => {
+    expect(localUrl({ host: "127.0.0.1", port: 4200 })).toBe("http://127.0.0.1:4200");
+    expect(localUrl({ host: "172.17.0.1", port: 4200 })).toBe("http://172.17.0.1:4200");
+    expect(localUrl({ host: "::1", port: 4200 })).toBe("http://[::1]:4200");
+    // Wildcard binds are reachable via loopback.
+    expect(localUrl({ host: "0.0.0.0", port: 4200 })).toBe("http://127.0.0.1:4200");
+    expect(localUrl({ host: "::", port: 4200 })).toBe("http://127.0.0.1:4200");
+    expect([isWildcardHost("0.0.0.0"), isWildcardHost("::"), isWildcardHost("127.0.0.1")]).toEqual([true, true, false]);
   });
 
   it("backup: dir + keep, validated", () => {

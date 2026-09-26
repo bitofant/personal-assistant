@@ -1,18 +1,18 @@
 import { describe, expect, it } from "vitest";
 import { readFileSync } from "node:fs";
-import { loadConfig } from "./config.js";
+import { loadConfig, localUrl } from "./config.js";
 import type { HealthResponse } from "../shared/api.js";
 
 // Needs a running server (npm run dev / npm start); self-skips otherwise.
-const port = (() => {
+// Connect where server.host binds, else a non-loopback bind would silently skip.
+const base = (() => {
   try {
-    return loadConfig().server.port;
+    return localUrl(loadConfig().server);
   } catch {
     return null;
   }
 })();
-const base = `http://localhost:${port}`;
-const up = port !== null && (await fetch(`${base}/api/health`).then(() => true, () => false));
+const up = base !== null && (await fetch(`${base}/api/health`).then(() => true, () => false));
 
 describe.skipIf(!up)("GET /api/health (live)", () => {
   it("matches the shared fixture shape", async () => {
