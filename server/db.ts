@@ -171,6 +171,13 @@ export const USER_MIGRATIONS = [
   `
   ALTER TABLE summaries ADD COLUMN parts INTEGER;
   `,
+  // Deleted transcript ids (no content): a device retry / re-upload must not resurrect a deletion.
+  `
+  CREATE TABLE deleted_transcripts (
+    id TEXT PRIMARY KEY,
+    deleted_at INTEGER NOT NULL
+  );
+  `,
 ] as const;
 
 // Part of shipped migration 4 (append-only): changing what's indexed = new migration that drops + rebuilds.

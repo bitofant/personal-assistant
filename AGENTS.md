@@ -39,7 +39,7 @@ The repo has a few components:
 
 ## Project state
 - Server scaffold (settled): config loading/validation, `GET /api/health`, static/Vite serving, systemd scripts.
-- Server (built): SQLite store, web auth, device pairing + approval, transcript ingest/list/detail, minimal web UI, LLM client + job queue, summaries (+ web view with job status), custom instructions + LLM meeting-type classify + per-user summary model (settings page), search v1 (FTS5 keyword + date/attendee filters + web page), nightly SQLite backups (`npm run backup` + systemd timer).
+- Server (built): SQLite store, web auth, device pairing + approval, transcript ingest/list/detail/delete, minimal web UI, LLM client + job queue, summaries (+ web view with job status), custom instructions + LLM meeting-type classify + per-user summary model (settings page), search v1 (FTS5 keyword + date/attendee filters + web page), nightly SQLite backups (`npm run backup` + systemd timer).
 - osx: `pa test-capture` spike runs on the Mac; Zoom tap + mic (no VP) record (verified live).
 - osx: `pa pair` / `pa status` / `pa upload <json>` built; PACore + CLI logic verified live on Linux vs scratch server (Keychain stubbed); not yet run on the Mac.
 - **Next = one Mac session** covering roadmap 1–4: follow `osx/CHECKLIST.md` (committed so it's on the Mac; its "Report back" list = what to bring to the dev box). Summary/search tuning waits for real transcripts.
@@ -60,7 +60,7 @@ The repo has a few components:
 7. **server: search** — v1 done (FTS5 keyword + date/attendee filters, see Server design → Search). Next v2: chunk+embed w/ `sqlite-vec`, hybrid merge, optional RAG answer — blocked on real transcripts (to judge retrieval) + an embedding model on the dev box. Pagination skipped: >50 hits → refine with filters.
 8. **osx: daemon (`pa run`)** — EventKit work calendars, meeting detection, auto capture → transcribe → persistent upload queue, raw-audio retention; `osx/install.sh` LaunchAgent; `os.Logger` + log file.
 9. **Speaker naming** — label speakers in web UI, per-user voice embeddings, match vs attendees; LLM name proposals never overwrite user labels.
-10. **Ops/polish** — per-user export/delete (must also purge user from backups), device list/revoke UI polish. Backups done (see Server design → Backups).
+10. **Ops/polish** — per-transcript delete done (see Transcript delete); per-user export/delete (must also purge user from backups), device list/revoke UI polish. Backups done (see Server design → Backups).
 
 ## Commands
 - `npm run dev` (tsx watch + Vite middleware), `npm run build` (frontend → `dist/web`), `npm start`, `npm run backup`.
@@ -136,6 +136,11 @@ The repo has a few components:
   - Stored: `raw` (body verbatim) + `data` (normalized JSON) + index columns. Ad-hoc `attendee_count` = null, not 0.
   - Derived data (summary, chunks, embeddings) regenerable from raw.
   - `updated_at` = content last changed: identical re-upload (device retry) keeps it and returns `changed:false` → no re-summarize, summary not stale. Don't make it bump on no-op uploads.
+- **Transcript delete (built):** `DELETE /api/transcripts/:id` (session) → 204 / 404; web "Delete transcript" button (confirm) on the detail page → back to list. Verified live in headless Chromium.
+  - `deleteTranscript`: one transaction; summary + `search_rows` go by FK cascade, FTS terms by the `search_rows_ad` trigger (unit test checks `search_fts` itself, not just search results). Needs `foreign_keys=ON` (openDb sets it; test DBs must too).
+  - Tombstone `deleted_transcripts (id, deleted_at)` (user migration 6, no content): re-upload of that id → **410 Gone**, so device retries / `pa transcribe --upload` re-runs can't resurrect a deletion. Daemon queue (planned) must treat 410 as permanent: drop it, don't retry.
+  - Then `jobs.remove` drops the summarize job; a run in flight can't settle a removed row, and `saveSummary` is `INSERT … SELECT … WHERE EXISTS(transcript)` → no FK error/orphan. Don't drop the guard.
+  - Not purged: existing backups (until they rotate out; UI confirm says so), SQLite free pages/WAL until reuse/checkpoint (no `secure_delete`).
 - **Formatting:** `shared/format.ts` (`formatDateTime`, `formatDuration`, `formatOffset`, `formatValue`; missing → `—`) used by UI and logs.
 - **LLM (built):** `server/llm.ts`, OpenAI-compatible only (`/chat/completions`, `/embeddings`, `/models`); `createLlm({getConfig})` reads config per call (live reload).
   - `config.json` `llm.providers[]` `{id, baseUrl, apiKey?, models[]}`; default = local vLLM/llama.cpp (free). Per-task routing `llm.tasks {summary, search, embed}`; paid providers opt-in per task.

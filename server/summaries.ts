@@ -385,8 +385,10 @@ export function saveSummary(db: Db, s: SummaryRecord, now: number): void {
   db.prepare(
     `INSERT INTO summaries (transcript_id, text, meeting_type, meeting_type_source, instructions_source, instructions, provider, model,
        prompt_tokens, completion_tokens, parts, transcript_updated_at, created_at)
-     VALUES (@transcriptId, @text, @meetingType, @meetingTypeSource, @source, @instructions, @provider, @model,
-       @promptTokens, @completionTokens, @parts, @transcriptUpdatedAt, @now)
+     SELECT @transcriptId, @text, @meetingType, @meetingTypeSource, @source, @instructions, @provider, @model,
+       @promptTokens, @completionTokens, @parts, @transcriptUpdatedAt, @now
+     -- Transcript deleted while the LLM ran → save nothing (not an FK error that fails the job).
+     WHERE EXISTS (SELECT 1 FROM transcripts WHERE id = @transcriptId)
      ON CONFLICT (transcript_id) DO UPDATE SET text = excluded.text, meeting_type = excluded.meeting_type,
        meeting_type_source = excluded.meeting_type_source,
        instructions_source = excluded.instructions_source, instructions = excluded.instructions,

@@ -189,6 +189,11 @@ export class JobQueue {
     return r ? toJob(r) : null;
   }
 
+  /** Drop the row; a run in flight then can't settle it (settle needs the row), so nothing is resurrected. */
+  remove(userId: number, type: string, key: string): boolean {
+    return this.db.prepare("DELETE FROM jobs WHERE user_id = ? AND type = ? AND key = ?").run(userId, type, key).changes === 1;
+  }
+
   private settle(job: Job, o: { status: JobStatus; failures: number; runAt: number; lastError: string | null }): boolean {
     // generation guard: a re-enqueue during the run must not be overwritten.
     return (

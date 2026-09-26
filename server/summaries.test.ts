@@ -37,7 +37,7 @@ import {
   seriesMeetingType,
   summarizeHandler,
 } from "./summaries.js";
-import { parseTranscriptUpload, upsertTranscript } from "./transcripts.js";
+import { deleteTranscript, parseTranscriptUpload, upsertTranscript } from "./transcripts.js";
 
 const RAW = readFileSync("shared/fixtures/transcript-upload.json", "utf8");
 const fixture = (over: Partial<TranscriptUpload> = {}) => parseTranscriptUpload({ ...JSON.parse(RAW), ...over });
@@ -244,6 +244,17 @@ describe("summary storage", () => {
     upsertTranscript(db, "dev", { ...t, segments: t.segments.slice(1) }, RAW, 3000);
     expect(getSummary(db, t.id)?.stale).toBe(true);
     expect(db.prepare("SELECT instructions, prompt_tokens FROM summaries").get()).toEqual({ instructions: builtin("1on1").text, prompt_tokens: null });
+  });
+
+  it("transcript deleted while the LLM ran → save is a no-op, not an FK error / orphan row", () => {
+    const db = new Database(":memory:");
+    db.pragma("foreign_keys = ON");
+    migrate(db, USER_MIGRATIONS);
+    const t = fixture();
+    upsertTranscript(db, "dev", t, RAW, 1000);
+    deleteTranscript(db, t.id, 2000);
+    saveSummary(db, { transcriptId: t.id, text: "S", meetingType: "1on1", meetingTypeSource: "rule", instructions: builtin("1on1"), provider: "local", model: "m1", usage: { promptTokens: null, completionTokens: null }, parts: 1, transcriptUpdatedAt: 1000 }, 5000);
+    expect(db.prepare("SELECT count(*) n FROM summaries").get()).toEqual({ n: 0 });
   });
 });
 

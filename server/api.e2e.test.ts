@@ -438,6 +438,34 @@ describe("API flow", () => {
     });
   });
 
+  it("delete transcript: gone from detail/list/search, job dropped, re-upload 410, web session required", async () => {
+    const id = "0d0d0d0d-0000-4000-8000-00000000de1e";
+    const doomed = { ...upload, id, segments: [{ start: 0, end: 2, speaker: "Alice", text: "zyzzyva confidential" }] };
+    expect((await post("/api/device/transcripts", doomed, bearer)).status).toBe(201);
+    const hits = async () => ((await (await fetch(`${base}/api/search?q=zyzzyva`, { headers: { cookie } })).json()) as SearchResponse).results.length;
+    expect(await hits()).toBe(1);
+    const del = (path: string, headers: Record<string, string>) => fetch(base + path, { method: "DELETE", headers });
+
+    expect((await del(`/api/transcripts/${id}`, {})).status).toBe(401);
+    expect((await del(`/api/transcripts/${id}`, bearer)).status).toBe(401); // device token ≠ web session
+    const res = await del(`/api/transcripts/${id.toUpperCase()}`, { cookie });
+    expect(res.status).toBe(204);
+
+    expect((await fetch(`${base}/api/transcripts/${id}`, { headers: { cookie } })).status).toBe(404);
+    expect((await fetch(`${base}/api/transcripts/${id}/summary`, { headers: { cookie } })).status).toBe(404);
+    const list = (await (await fetch(`${base}/api/transcripts`, { headers: { cookie } })).json()) as TranscriptListResponse;
+    expect(list.transcripts.map((t) => t.id)).not.toContain(id);
+    expect(await hits()).toBe(0);
+    expect(app.jobs.find(1, "summarize", id)).toBeNull();
+
+    const again = await post("/api/device/transcripts", doomed, bearer);
+    expect(again.status).toBe(410);
+    expect(((await again.json()) as { message: string }).message).toMatch(/deleted/);
+    expect((await del(`/api/transcripts/${id}`, { cookie })).status).toBe(404);
+    // Other transcripts untouched.
+    expect((await fetch(`${base}/api/transcripts/${upload.id.toLowerCase()}`, { headers: { cookie } })).status).toBe(200);
+  });
+
   it("disabling the user in config cuts off both web session and device", async () => {
     config = parseConfig({ users: [] });
     expect((await fetch(`${base}/api/auth/me`, { headers: { cookie } })).status).toBe(401);
