@@ -68,7 +68,7 @@ npm run typecheck      # must pass before a PR
 
 Requirements: Apple Silicon, macOS 26, Command Line Tools (`xcode-select --install`). You don't need Xcode.
 
-First time on a Mac? Follow `osx/CHECKLIST.md` step by step (build → capture → ASR bench → pair → transcribe + upload).
+First time on a Mac? Run `osx/mac-check.sh --server <url> --account <you>` (see `osx/CHECKLIST.md`). It guides you through build → capture → ASR bench → transcribe → pair → upload → upload-queue tests, pauses when you need to act, and writes a report to `~/pa-test-capture/report-<stamp>.tgz`.
 
 One-time setup: create a self-signed code-signing certificate named `PA Local Signing`. In Keychain Access, go to Certificate Assistant → Create a Certificate…, then pick Identity Type "Self Signed Root" and Certificate Type "Code Signing". Permission grants stick to this signing identity, so they survive rebuilds.
 
@@ -76,7 +76,7 @@ One-time setup: create a self-signed code-signing certificate named `PA Local Si
 cd osx
 swift test             # pure unit tests (on the Linux dev box: osx/test-linux.sh, needs Docker)
 ./build.sh             # → build/PA.app (signed, headless)
-open -W --stdout $(tty) --stderr $(tty) build/PA.app --args test-capture --seconds 30
+./pa test-capture --seconds 30   # wrapper: runs build/PA.app/Contents/MacOS/pa from anywhere
 ```
 
 `test-capture` records all system audio through a global Core Audio tap, plus your mic, into two WAVs in `~/pa-test-capture/`. It then prints peak/RMS levels for each stream. If a stream is flagged "all zeros", the permission was probably denied. Check System Settings → Privacy & Security → Microphone / Screen & System Audio Recording. It prints a progress line every second, so you can see when a stream stops advancing. To isolate a problem, use `--no-mic` or `--no-system` to record one stream only.
@@ -86,7 +86,7 @@ To record from a mic other than the system default, run `osx/pick-mic.sh`. It li
 To pair the Mac with your server account (the account must be enabled in the server's `config.json`), run:
 
 ```sh
-build/PA.app/Contents/MacOS/pa pair https://your-server alice   # shows a 6-digit code, waits
+./pa pair https://your-server alice   # shows a 6-digit code, waits
 ```
 
 Sign in to the web UI, open Devices, and type in the code. `pa` stores the token in the Keychain and the server URL in `config.json`. `pa status` asks the server for the device's pairing state. `pa upload file.json` uploads a transcript in the `TranscriptUpload` format (see `shared/api.ts` and `shared/fixtures/transcript-upload.json`). Plain `http://` is only accepted for `localhost`.
@@ -94,13 +94,13 @@ Sign in to the web UI, open Devices, and type in the code. `pa` stores the token
 To transcribe a recording on the Mac (Parakeet v3 speech-to-text + speaker diarization via [FluidAudio](https://github.com/FluidInference/FluidAudio); models download on first run):
 
 ```sh
-./bench-asr.sh                                    # FluidAudio's own CLI on the newest capture: speed + raw transcripts
-build/PA.app/Contents/MacOS/pa transcribe          # newest capture → ~/pa-test-capture/pa-<stamp>-transcript.json
-build/PA.app/Contents/MacOS/pa transcribe --upload # …and queue it for upload to the paired server (tries once now)
-build/PA.app/Contents/MacOS/pa queue              # pending + failed uploads
-build/PA.app/Contents/MacOS/pa run                # daemon (so far: retries the upload queue)
+./bench-asr.sh           # FluidAudio's own CLI on the newest capture: speed + raw transcripts
+./pa transcribe          # newest capture → ~/pa-test-capture/pa-<stamp>-transcript.json
+./pa transcribe --upload # …and queue it for upload to the paired server (tries once now)
+./pa queue               # pending + failed uploads
+./pa run                 # daemon (so far: retries the upload queue)
 ```
 
 `pa transcribe` labels the mic stream as you (`--me NAME`, default: your macOS full name) and splits the system stream into `Speaker 1`, `Speaker 2`, …. Use `--stamp yyyyMMdd-HHmmss` to pick an older recording and `--no-diarize` to skip speaker separation. Re-running on the same recording keeps its id, so a re-upload replaces the transcript instead of duplicating it. Uploads go through a queue on disk (`~/Library/Application Support/com.bitofant.pa/upload-queue/`): if the server is unreachable, `pa run` retries with backoff; a revoked or unpaired device pauses the queue until you `pa pair` again; uploads the server rejects as invalid move to `failed/`. If you deleted that transcript in the web UI, the upload is refused (and dropped from the queue); delete the `-transcript.json` file to transcribe it again as a new transcript.
 
-Launch `test-capture` with `open` as shown. If you run the binary directly from a terminal, macOS attributes the permission prompts to the terminal app instead of PA.
+`osx/pa` launches `test-capture` through `open`, so the permission prompts belong to PA. If you run the binary directly from a terminal, macOS attributes them to the terminal app instead. Under `open`, `osx/pa` always exits 0, so read the output for errors.

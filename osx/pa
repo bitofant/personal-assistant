@@ -1,0 +1,48 @@
+#!/bin/bash
+# Run the built pa from anywhere: osx/pa <subcommand> [args…] (same args as the binary; `osx/pa help`).
+# Subcommands needing TCC (mic/system audio/calendar) go through LaunchServices so prompts + grants attach to
+# PA.app, not Terminal; the rest run the bare binary (keeps exit status + cwd). bash 3.2 (stock macOS).
+set -euo pipefail
+
+here=$(cd "$(dirname "$0")" && pwd)
+app="$here/build/PA.app"
+bin="$app/Contents/MacOS/pa"
+[ -x "$bin" ] || { echo "No $bin — run osx/build.sh first." >&2; exit 1; }
+
+# Add `run` once it records/reads the calendar (today it only uploads → bare is fine).
+case "${1:-}" in
+  test-capture) ;;
+  *) exec "$bin" "$@" ;;
+esac
+
+# `open` starts the app with cwd / → make path args absolute.
+args=()
+prev=
+for a in "$@"; do
+  if [ "$prev" = "--out" ]; then
+    case "$a" in /*) ;; *) a="$PWD/$a" ;; esac
+  fi
+  args+=("$a")
+  prev=$a
+done
+
+# Pids of already-running pa (e.g. a LaunchAgent) → never signal those on Ctrl-C.
+# `|| true`: pgrep exits 1 on no match → set -e + pipefail would abort silently.
+before=" $( (pgrep -f "^$bin" || true) | tr '\n' ' ') "
+ours() {
+  for p in $(pgrep -f "^$bin" || true); do
+    case "$before" in *" $p "*) ;; *) echo "$p" ;; esac
+  done
+}
+# App output → files, streamed live by tail: works whether our stdout is a terminal, pipe (tee) or file.
+tmp=$(mktemp -d)
+touch "$tmp/out" "$tmp/err"
+tail -f "$tmp/out" & t1=$!
+tail -f "$tmp/err" >&2 & t2=$!
+cleanup() { sleep 0.5; kill "$t1" "$t2" 2>/dev/null || true; rm -rf "$tmp"; }
+# Ctrl-C only kills `open -W`, not the app it launched → forward it.
+trap 'kill -INT $(ours) 2>/dev/null || true; cleanup; exit 130' INT TERM
+
+open -W --stdout "$tmp/out" --stderr "$tmp/err" "$app" --args "${args[@]}"
+cleanup
+# Note: `open -W` exits 0 whatever pa returned; read the output for errors.
