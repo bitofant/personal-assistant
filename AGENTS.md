@@ -44,7 +44,7 @@ The repo has a few components:
 - osx: meeting detection + calendar model (pure PACore) built, not wired (no EventKit/Core Audio wrappers yet).
 - osx: upload queue + `pa run` (upload worker only) + `pa queue` built; verified live on Linux harness (unpaired → pair → resume, outage → retry, revoke → re-pair → resume, 410 drop); not yet on the Mac.
 - osx: `pa pair` / `pa status` / `pa upload <json>` built; PACore + CLI logic verified live on Linux vs scratch server (Keychain stubbed); not yet run on the Mac.
-- **Next = one Mac session** covering roadmap 1–4: follow `osx/CHECKLIST.md` (committed so it's on the Mac; its "Report back" list = what to bring to the dev box). Summary/search tuning waits for real transcripts.
+- **Next = one Mac session** covering roadmap 1–4: run `osx/mac-check.sh` (guided; see `osx/CHECKLIST.md`) → bring back its `report-<stamp>.tgz`. Summary/search tuning waits for real transcripts.
 - Everything else below = planned, not built.
 - Default port **4200** (4000/4100 taken on the dev box by other services).
 - Monorepo: `server/` (Node backend), `web/` (React frontend), `shared/` (TS wire types), `osx/` (headless Swift CLI).
@@ -70,7 +70,10 @@ The repo has a few components:
 - `npm test`, `npm run test:watch`, `npm run test:e2e`, `npm run typecheck`.
 - `./config-gen.sh`, `./install-service.sh`, `./start.sh [dev]`, `./stop.sh`, `./restart.sh`, `./rebuild.sh`.
 - osx: `swift build` / `swift test` in `osx/`; `osx/test-linux.sh` = PACore tests on the Linux dev box (Docker `swift:6.1`; `pa` target is macOS-only in the manifest); `osx/build.sh [identity]` → signed `osx/build/PA.app`; `osx/install.sh` (LaunchAgent, planned); `osx/pick-mic.sh` (numbered mic picker); `osx/bench-asr.sh [dir] [stamp]` (Mac: pinned `fluidaudiocli` ASR + offline diarization on a capture → `bench-<stamp>/summary.txt`); `osx/CHECKLIST.md` = first-Mac-run steps.
-- Run bundle: `open -W --stdout $(tty) --stderr $(tty) osx/build/PA.app --args test-capture`.
+- `osx/pa <cmd>` = run built `pa` from anywhere. TCC cmds (`test-capture`; add `run` once it records) via `open -W` (cwd `/` → `--out` made absolute; output → files streamed by `tail -f` so pipes/tee work live; Ctrl-C forwarded to our pid only; exit status always 0), rest = bare binary.
+- `osx/mac-check.sh [--from|--only STAGE] [--seconds N] [--server URL] [--account A] [--tunnel HOST]` = guided CHECKLIST run: stages `prereqs build capture bench transcribe pair upload queue`; pauses for human actions, y/n(+note)/skip for judgments (plays WAVs via `afplay`), greps pa output for the rest → `~/pa-test-capture/report-<stamp>{/,.tgz}`. `--tunnel` = own `ssh -L 4200` (control socket) → cuts it for the outage test. Greps exact pa strings (`still queued`, `stopped until re-paired`, `resumed`, `dropped`, `all zeros`, …): changing those messages → update the script.
+  - `pa run` stopped with SIGTERM, not INT: bash starts background jobs with SIGINT ignored (verified live).
+  - Both scripts only dry-run on Linux vs stubbed macOS tools + fake `pa`; not yet on the Mac.
 
 ## Working practices
 - **AGENTS.md hygiene:** record settled decisions + their *why*; mark sections `(settled)` / `(planned, not built)`. Non-obvious fix → note the bug it prevents + "don't regress/simplify". Facts about external tools/APIs checked by running them → say "verified live"; don't trust docs alone.
