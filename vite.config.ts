@@ -5,4 +5,6 @@ import react from "@vitejs/plugin-react";
 export default defineConfig({
   plugins: [react()],
   build: { outDir: "dist/web", emptyOutDir: true },
+  // Served publicly via the nginx reverse proxy in ~/src/webserver.
+  server: { allowedHosts: ["assistant.riuna.com"] },
 });

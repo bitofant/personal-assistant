@@ -112,12 +112,29 @@ need_stamp() {
 
 need_server() {
   if [ -n "$tunnel" ]; then server=${server:-http://localhost:4200}; tunnel_up; fi
-  if [ -z "$server" ]; then
+  # Same rule as PACore parseServerURL: https, or http only for loopback (token would cross the LAN in plaintext).
+  while ! valid_server "$server"; do
+    [ -n "$server" ] && echo "  not accepted by pa: $server (needs a scheme; plain http only for localhost)"
     echo "Server URL: https://…, or http://localhost:<port> via your own ssh tunnel (or re-run with --tunnel HOST)."
     read -rp "  server URL: " server </dev/tty
-  fi
+  done
   [ -n "$account" ] || read -rp "  account (enabled in the server's config.json users): " account </dev/tty
   note "  server $server, account $account${tunnel:+, tunnel via $tunnel}"
+}
+
+valid_server() {
+  case "$1" in
+    https://?*) return 0 ;;
+    http://localhost|http://localhost[:/]*|http://127.0.0.1|http://127.0.0.1[:/]*|http://\[::1\]*) return 0 ;;
+  esac
+  return 1
+}
+
+# Upload/queue stages are meaningless unpaired (everything just sits in the queue).
+need_paired() {
+  "$pa" status > "$report/status-check.log" 2>&1
+  grep -q ': active$' "$report/status-check.log" && return 0
+  fail "not paired ($(tail -1 "$report/status-check.log")) — pair first: osx/mac-check.sh --from pair"; finish
 }
 
 tunnel_up() {
@@ -216,7 +233,7 @@ st_pair() {
   "$pa" status > "$report/status-before.log" 2>&1
   pause "pa pair will show a 6-digit code. Open $server/#/devices (signed in as $account) and type it in; pa finishes on its own.
   Watch for a Keychain dialog (\"pa wants to use…\")."
-  run pair "$pa" pair "$server" "$account" || return
+  run pair "$pa" pair "$server" "$account" || { echo "Fix it, then: osx/mac-check.sh --from pair"; finish; }
   expect pair 'Paired:|Already paired' "paired"
   ask "Device name in the web UI = this Mac's name"
   ask "No Keychain dialog (n = there was one; describe it)"
@@ -228,7 +245,8 @@ st_pair() {
 st_upload() {
   need_build; need_stamp
   [ -n "$server" ] || need_server
-  run upload "$pa" transcribe --stamp "$stamp" --upload || return
+  need_paired
+  run upload"$pa" transcribe --stamp "$stamp" --upload || return
   expect upload '^(uploaded|replaced) ' "uploaded"
   run upload-again "$pa" transcribe --stamp "$stamp" --no-diarize --upload
   expect upload-again '^replaced ' "re-upload replaced (same id, no duplicate)"
@@ -241,6 +259,7 @@ st_upload() {
 st_queue() {
   need_build; need_stamp
   [ -n "$server" ] || need_server
+  need_paired
   local log="$report/pa-run.log"
   run queue-empty "$pa" queue && expect queue-empty '^queue empty' "queue empty"
 

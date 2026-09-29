@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState, type FormEvent, type ReactNode } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type FormEvent } from "react";
 import type {
   DeviceInfo,
   DeviceListResponse,
@@ -19,7 +19,7 @@ import { emptySearch, parseSearchHash, parseTranscriptHash, transcriptHash } fro
 import { Search, SearchBox } from "./Search.js";
 import { SummarySettings } from "./Settings.js";
 import { summaryStatusView, type SummaryTone } from "./summaryState.js";
-import { ErrorLine, muted, routeKey, routeLabel } from "./ui.js";
+import { ErrorLine, routeKey, routeLabel } from "./ui.js";
 
 function useHash(): string {
   const [hash, setHash] = useState(location.hash || "#/");
@@ -31,82 +31,141 @@ function useHash(): string {
   return hash;
 }
 
+type Page = "transcripts" | "search" | "settings" | "devices";
+
+const NAV: { page: Page; href: string; name: string; sub: string }[] = [
+  { page: "transcripts", href: "#/", name: "Transcripts", sub: "All recorded meetings" },
+  { page: "settings", href: "#/settings", name: "Summary settings", sub: "Model · instructions" },
+  { page: "devices", href: "#/devices", name: "Devices", sub: "Paired Macs" },
+];
+
 export function App() {
   const [me, setMe] = useState<MeResponse | null | undefined>(undefined);
+  const [sidebarOpen, setSidebarOpen] = useState(false);
   const hash = useHash();
 
   useEffect(() => {
     api<MeResponse>("/auth/me").then(setMe, () => setMe(null));
   }, []);
+  // Mobile drawer covers what was just opened.
+  useEffect(() => {
+    setSidebarOpen(false);
+  }, [hash]);
 
-  if (me === undefined) return <Shell>Loading…</Shell>;
-  if (me === null) return <Shell><Login onLogin={setMe} /></Shell>;
+  if (me === undefined) return <div className="app" />;
+  if (me === null) return <Login onLogin={setMe} />;
 
   const logout = () => api("/auth/logout", { method: "POST" }).finally(() => setMe(null));
   const detail = parseTranscriptHash(hash);
   const search = parseSearchHash(hash);
+  const page: Page = hash === "#/devices" ? "devices" : hash === "#/settings" ? "settings" : search ? "search" : "transcripts";
+  const title = { transcripts: detail ? "Transcript" : "Transcripts", search: "Search", settings: "Summary settings", devices: "Devices" }[page];
   return (
-    <Shell>
-      <nav style={{ display: "flex", gap: "1rem", alignItems: "baseline" }}>
-        <a href="#/">Transcripts</a>
-        <a href="#/settings">Summary settings</a>
-        <a href="#/devices">Devices</a>
-        <SearchBox params={search ?? emptySearch} />
-        <span style={{ marginLeft: "auto" }}>{me.username}</span>
-        <button onClick={logout}>Log out</button>
-      </nav>
-      {hash === "#/devices" ? (
-        <Devices />
-      ) : hash === "#/settings" ? (
-        <SummarySettings />
-      ) : search ? (
-        <Search params={search} />
-      ) : detail ? (
-        <Transcript id={detail.id} seg={detail.seg} />
-      ) : (
-        <Transcripts />
-      )}
-    </Shell>
-  );
-}
-
-function Shell({ children }: { children: ReactNode }) {
-  return (
-    <main style={{ fontFamily: "system-ui, sans-serif", padding: "1rem 2rem", maxWidth: "60rem", margin: "0 auto" }}>
-      <h1 style={{ fontSize: "1.3rem" }}>personal-assistant</h1>
-      {children}
-    </main>
+    <div className="app">
+      <button className="menu-toggle" onClick={() => setSidebarOpen(true)} aria-label="Open menu">
+        ☰
+      </button>
+      {sidebarOpen && <div className="sidebar-backdrop" onClick={() => setSidebarOpen(false)} />}
+      <aside className={`sidebar ${sidebarOpen ? "open" : ""}`}>
+        <div className="sidebar-header">
+          <h1>personal-assistant</h1>
+          <button className="logout-button" onClick={logout} title={`Log out ${me.username}`}>
+            Log out
+          </button>
+        </div>
+        <div className="sidebar-search">
+          <SearchBox params={search ?? emptySearch} />
+        </div>
+        <nav className="nav-list">
+          {NAV.map((n) => (
+            <a key={n.page} href={n.href} className={`nav-item ${page === n.page ? "active" : ""}`}>
+              <span className="nav-item-name">{n.name}</span>
+              <span className="nav-item-sub">{n.sub}</span>
+            </a>
+          ))}
+        </nav>
+        <div className="sidebar-user">Signed in as {me.username}</div>
+      </aside>
+      <main className="main">
+        <div className="page-header">{title}</div>
+        {/* key: new page starts scrolled to top. */}
+        <div className="content" key={detail ? `t/${detail.id}` : hash.split("?")[0]}>
+          <div className="content-inner">
+            {page === "devices" ? (
+              <Devices />
+            ) : page === "settings" ? (
+              <SummarySettings />
+            ) : search ? (
+              <Search params={search} />
+            ) : detail ? (
+              <Transcript id={detail.id} seg={detail.seg} />
+            ) : (
+              <Transcripts />
+            )}
+          </div>
+        </div>
+      </main>
+    </div>
   );
 }
 
 function Login({ onLogin }: { onLogin: (me: MeResponse) => void }) {
+  const [mode, setMode] = useState<"login" | "signup">("login");
   const [username, setUsername] = useState("");
   const [password, setPassword] = useState("");
-  const [msg, setMsg] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [message, setMessage] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
 
-  const submit = (mode: "login" | "signup") => async (e?: FormEvent) => {
-    e?.preventDefault();
-    setMsg(null);
+  const submit = async (e: FormEvent) => {
+    e.preventDefault();
+    setError(null);
+    setMessage(null);
+    setBusy(true);
     try {
       if (mode === "login") return onLogin(await api<MeResponse>("/auth/login", { body: { username, password } }));
       const r = await api<SignupResponse>("/auth/signup", { body: { username, password } });
-      if (r.enabled) onLogin({ username: r.username });
-      else setMsg(`Account "${r.username}" created. Ask the admin to enable it in config.json, then log in.`);
+      if (r.enabled) return onLogin({ username: r.username });
+      setMessage(`Account "${r.username}" created. Ask the admin to enable it in config.json, then log in.`);
+      setMode("login");
+      setPassword("");
     } catch (err) {
-      setMsg((err as Error).message);
+      setError((err as Error).message);
+    } finally {
+      setBusy(false);
     }
   };
+  const switchMode = (m: "login" | "signup") => (setMode(m), setError(null), setMessage(null));
 
   return (
-    <form onSubmit={submit("login")} style={{ display: "grid", gap: "0.5rem", maxWidth: "20rem" }}>
-      <input placeholder="username" autoComplete="username" value={username} onChange={(e) => setUsername(e.target.value)} />
-      <input placeholder="password" type="password" autoComplete="current-password" value={password} onChange={(e) => setPassword(e.target.value)} />
-      <div style={{ display: "flex", gap: "0.5rem" }}>
-        <button type="submit">Log in</button>
-        <button type="button" onClick={() => void submit("signup")()}>Sign up</button>
-      </div>
-      <ErrorLine error={msg} />
-    </form>
+    <div className="login">
+      <form className="login-card" onSubmit={(e) => void submit(e)}>
+        <h1>personal-assistant</h1>
+        <div className="login-tabs">
+          <button type="button" className={mode === "login" ? "active" : ""} onClick={() => switchMode("login")}>
+            Log in
+          </button>
+          <button type="button" className={mode === "signup" ? "active" : ""} onClick={() => switchMode("signup")}>
+            Sign up
+          </button>
+        </div>
+        <label className="field-label" htmlFor="login-username">Username</label>
+        <input id="login-username" autoFocus autoComplete="username" value={username} onChange={(e) => setUsername(e.target.value)} />
+        <label className="field-label" htmlFor="login-password">Password</label>
+        <input
+          id="login-password"
+          type="password"
+          autoComplete={mode === "login" ? "current-password" : "new-password"}
+          value={password}
+          onChange={(e) => setPassword(e.target.value)}
+        />
+        <ErrorLine error={error} />
+        {message && <p className="login-message">{message}</p>}
+        <button className="primary" type="submit" disabled={busy || !username.trim() || !password}>
+          {mode === "login" ? "Log in" : "Sign up"}
+        </button>
+      </form>
+    </div>
   );
 }
 
@@ -118,28 +177,30 @@ function Transcripts() {
   }, []);
 
   if (error) return <ErrorLine error={error} />;
-  if (!items) return <p>Loading…</p>;
-  if (!items.length) return <p>No transcripts yet. Pair a Mac under <a href="#/devices">Devices</a>.</p>;
+  if (!items) return <p className="muted">Loading…</p>;
+  if (!items.length) return <p className="empty-state">No transcripts yet. Pair a Mac under <a href="#/devices">Devices</a>.</p>;
   return (
-    <table style={{ width: "100%", borderCollapse: "collapse" }}>
-      <thead>
-        <tr style={{ textAlign: "left" }}>
-          <th>When</th><th>Title</th><th>Duration</th><th>Attendees</th><th>Calendar</th><th>Device</th>
-        </tr>
-      </thead>
-      <tbody>
-        {items.map((t) => (
-          <tr key={t.id}>
-            <td>{formatDateTime(t.startedAt)}</td>
-            <td><a href={transcriptHash(t.id)}>{t.title ?? "(ad-hoc call)"}</a></td>
-            <td>{formatDuration(t.startedAt, t.endedAt)}</td>
-            <td>{formatValue(t.attendeeCount)}</td>
-            <td>{formatValue(t.calendarName)}</td>
-            <td>{formatValue(t.deviceName)}</td>
+    <div className="table-wrap">
+      <table className="table">
+        <thead>
+          <tr>
+            <th>When</th><th>Title</th><th>Duration</th><th className="wide-only">Attendees</th><th className="wide-only">Calendar</th><th className="wide-only">Device</th>
           </tr>
-        ))}
-      </tbody>
-    </table>
+        </thead>
+        <tbody>
+          {items.map((t) => (
+            <tr key={t.id}>
+              <td>{formatDateTime(t.startedAt)}</td>
+              <td><a href={transcriptHash(t.id)}>{t.title ?? "(ad-hoc call)"}</a></td>
+              <td>{formatDuration(t.startedAt, t.endedAt)}</td>
+              <td className="wide-only">{formatValue(t.attendeeCount)}</td>
+              <td className="wide-only">{formatValue(t.calendarName)}</td>
+              <td className="wide-only">{formatValue(t.deviceName)}</td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
   );
 }
 
@@ -157,29 +218,28 @@ function Transcript({ id, seg }: { id: string; seg: number | null }) {
   }, [t, seg]);
 
   if (error) return <ErrorLine error={error} />;
-  if (!t) return <p>Loading…</p>;
+  if (!t) return <p className="muted">Loading…</p>;
   const m = t.meeting;
   return (
     <article>
       <h2>{m?.title ?? "(ad-hoc call)"}</h2>
-      <p>
+      <p className="meta">
         {formatDateTime(t.startedAt)} · {formatDuration(t.startedAt, t.endedAt)} · calendar {formatValue(m?.calendarName)} · device{" "}
         {formatValue(t.deviceName)}
       </p>
       {m && m.attendees.length > 0 && (
-        <p>Attendees: {m.attendees.map((a) => a.name ?? a.email).join(", ")}</p>
+        <p className="meta">With {m.attendees.map((a) => a.name ?? a.email).join(", ")}</p>
       )}
       <SummaryPanel key={t.id} transcriptId={t.id} initial={{ summary: t.summary, summaryJob: t.summaryJob }} />
       <h3>Transcript</h3>
-      <div>
+      <div className="segments">
         {t.segments.map((s, i) => (
-          <p key={i} ref={i === seg ? target : undefined} style={{ margin: "0.3rem 0", background: i === seg ? "#fff3b0" : undefined }}>
-            <span style={{ color: "#888", fontVariantNumeric: "tabular-nums" }}>{formatOffset(s.start)}</span>{" "}
-            <strong>{formatValue(s.speaker)}:</strong> {s.text}
+          <p key={i} ref={i === seg ? target : undefined} className={i === seg ? "target" : undefined}>
+            <span className="offset">{formatOffset(s.start)}</span> <span className="speaker">{formatValue(s.speaker)}:</span> {s.text}
           </p>
         ))}
       </div>
-      <p style={{ color: "#888", fontSize: "0.8rem" }}>
+      <p className="muted">
         ASR {t.asrModel} · diarization {formatValue(t.diarizationModel)} · received {formatDateTime(t.receivedAt)}
       </p>
       <DeleteTranscript id={t.id} title={m?.title ?? "this ad-hoc call"} />
@@ -204,7 +264,7 @@ function DeleteTranscript({ id, title }: { id: string; title: string }) {
   };
   return (
     <p>
-      <button disabled={busy} onClick={() => void remove()} style={{ color: "crimson" }}>
+      <button className="danger" disabled={busy} onClick={() => void remove()}>
         {busy ? "Deleting…" : "Delete transcript"}
       </button>
       {error && <ErrorLine error={error} />}
@@ -212,7 +272,7 @@ function DeleteTranscript({ id, title }: { id: string; title: string }) {
   );
 }
 
-const TONE_COLOR: Record<SummaryTone, string> = { info: "#555", warn: "#a15c00", error: "crimson" };
+const TONE_CLASS: Record<SummaryTone, string> = { info: "muted", warn: "warn", error: "error" };
 
 function SummaryPanel({ transcriptId, initial }: { transcriptId: string; initial: TranscriptSummaryResponse }) {
   const [state, setState] = useState(initial);
@@ -250,10 +310,9 @@ function SummaryPanel({ transcriptId, initial }: { transcriptId: string; initial
     );
 
   return (
-    <section style={{ border: "1px solid #ddd", borderRadius: 6, padding: "0.5rem 1rem", margin: "1rem 0" }}>
-      <div style={{ display: "flex", alignItems: "baseline", gap: "1rem" }}>
-        <h3 style={{ margin: "0.5rem 0" }}>Summary</h3>
-        <span style={{ marginLeft: "auto" }} />
+    <section className="card">
+      <div className="card-head">
+        <h3>Summary</h3>
         {choices.length > 1 && picked && (
           <select aria-label="Model" value={routeKey(picked)} onChange={(e) => setPick(e.target.value)} disabled={view.inProgress}>
             {choices.map((c) => (
@@ -263,12 +322,12 @@ function SummaryPanel({ transcriptId, initial }: { transcriptId: string; initial
             ))}
           </select>
         )}
-        <button disabled={view.inProgress} onClick={() => void summarize()}>
+        <button className="primary" disabled={view.inProgress} onClick={() => void summarize()}>
           {view.action}
         </button>
       </div>
       {view.message && (
-        <p role="status" style={{ color: TONE_COLOR[view.tone] }}>
+        <p role="status" className={TONE_CLASS[view.tone]}>
           {view.inProgress && view.tone === "info" && "⏳ "}
           {view.message}
         </p>
@@ -277,10 +336,10 @@ function SummaryPanel({ transcriptId, initial }: { transcriptId: string; initial
       {summary && (
         <>
           {summary.stale && !view.inProgress && (
-            <p style={{ color: TONE_COLOR.warn }}>The transcript changed after this summary was made.</p>
+            <p className="warn">The transcript changed after this summary was made.</p>
           )}
-          <div className="summary" style={{ opacity: view.inProgress ? 0.6 : 1 }} dangerouslySetInnerHTML={{ __html: html }} />
-          <p style={muted}>
+          <div className={`summary ${view.inProgress ? "dim" : ""}`} dangerouslySetInnerHTML={{ __html: html }} />
+          <p className="muted">
             {meetingTypeLabel(summary.meetingType)}
             {summary.meetingTypeSource === "llm" && " (detected by LLM)"}
             {summary.meetingTypeSource === "series" && " (same as earlier meetings in this series)"}
@@ -307,35 +366,45 @@ function Devices() {
   const act = (p: Promise<unknown>) =>
     p.then(() => setError(null), (e: ApiError) => setError(e.message)).finally(load);
 
-  if (!devices) return error ? <ErrorLine error={error} /> : <p>Loading…</p>;
+  if (!devices) return error ? <ErrorLine error={error} /> : <p className="muted">Loading…</p>;
   return (
     <section>
-      <p>
-        Pair a Mac with <code>pa pair &lt;server&gt; &lt;account&gt;</code>, then enter the code it shows. <button onClick={load}>Refresh</button>
-      </p>
+      <div className="row">
+        <p className="grow">
+          Pair a Mac with <code>pa pair &lt;server&gt; &lt;account&gt;</code>, then enter the code it shows.
+        </p>
+        <button onClick={load}>Refresh</button>
+      </div>
       <ErrorLine error={error} />
-      {!devices.length && <p>No devices.</p>}
-      <ul>
+      {!devices.length && <p className="empty-state">No devices.</p>}
+      <ul className="list">
         {devices.map((d) => (
-          <li key={d.id} style={{ marginBottom: "0.5rem" }}>
-            <strong>{d.name}</strong> — {d.status}
+          <li key={d.id} className="row">
+            <strong>{d.name}</strong>
+            <span className={d.status === "pending" ? "badge" : "muted"}>{d.status}</span>
             {d.status === "pending" ? (
               <>
-                {" "}(expires {formatDateTime(d.expiresAt)}){" "}
+                <span className="muted grow">expires {formatDateTime(d.expiresAt)}</span>
                 <input
                   placeholder="6-digit code"
                   inputMode="numeric"
-                  size={8}
+                  size={10}
                   value={codes[d.id] ?? ""}
                   onChange={(e) => setCodes({ ...codes, [d.id]: e.target.value })}
-                />{" "}
-                <button onClick={() => act(api(`/devices/${d.id}/approve`, { body: { pairingCode: codes[d.id] ?? "" } }))}>Approve</button>{" "}
+                />
+                <button className="primary" onClick={() => act(api(`/devices/${d.id}/approve`, { body: { pairingCode: codes[d.id] ?? "" } }))}>
+                  Approve
+                </button>
                 <button onClick={() => act(api(`/devices/${d.id}`, { method: "DELETE" }))}>Reject</button>
               </>
             ) : (
               <>
-                {" "}· paired {formatDateTime(d.approvedAt)} · last used {formatDateTime(d.lastUsedAt)}{" "}
-                <button onClick={() => confirm(`Revoke ${d.name}?`) && act(api(`/devices/${d.id}`, { method: "DELETE" }))}>Revoke</button>
+                <span className="muted grow">
+                  paired {formatDateTime(d.approvedAt)} · last used {formatDateTime(d.lastUsedAt)}
+                </span>
+                <button className="danger" onClick={() => confirm(`Revoke ${d.name}?`) && act(api(`/devices/${d.id}`, { method: "DELETE" }))}>
+                  Revoke
+                </button>
               </>
             )}
           </li>

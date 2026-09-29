@@ -3,12 +3,11 @@ import type { CustomInstruction, InstructionScope, InstructionsResponse, SeriesI
 import { formatDateTime } from "../shared/format.js";
 import { BUILTIN_INSTRUCTIONS, MEETING_TYPES } from "../shared/instructions.js";
 import { api } from "./api.js";
-import { ErrorLine, muted, routeKey, routeLabel } from "./ui.js";
+import { ErrorLine, routeKey, routeLabel } from "./ui.js";
 
 export function SummarySettings() {
   return (
     <section>
-      <h2>Summary settings</h2>
       <ModelSetting />
       <Instructions />
     </section>
@@ -22,7 +21,7 @@ function ModelSetting() {
     api<SettingsResponse>("/settings").then(setS, (e: Error) => setError(e.message));
   }, []);
 
-  if (!s) return error ? <ErrorLine error={error} /> : <p>Loading…</p>;
+  if (!s) return error ? <ErrorLine error={error} /> : <p className="muted">Loading…</p>;
   const choices = s.summaryLlmChoices;
   const selected = s.summaryLlm ?? choices.find((c) => c.isDefault) ?? null;
   const pick = (i: number) => {
@@ -41,13 +40,13 @@ function ModelSetting() {
       {!choices.length && <p>No summary model configured (admin: <code>llm.tasks.summary</code> in config.json).</p>}
       {choices.length === 1 && <p>{routeLabel(choices[0])}. To offer more (e.g. a paid remote model), list them under <code>llm.tasks.summary</code> in config.json.</p>}
       {choices.length > 1 && (
-        <fieldset style={{ border: "none", padding: 0 }}>
+        <fieldset className="radio-list">
           {choices.map((c, i) => (
-            <label key={routeKey(c)} style={{ display: "block" }}>
+            <label key={routeKey(c)}>
               <input type="radio" name="summaryLlm" checked={!!selected && routeKey(selected) === routeKey(c)} onChange={() => pick(i)} /> {routeLabel(c)}
             </label>
           ))}
-          <p style={muted}>Used for new summaries and meeting-type detection. Existing summaries keep their model until re-summarized.</p>
+          <p className="muted">Used for new summaries and meeting-type detection. Existing summaries keep their model until re-summarized.</p>
         </fieldset>
       )}
       <ErrorLine error={error} />
@@ -63,7 +62,7 @@ function Instructions() {
   }, []);
   useEffect(load, [load]);
 
-  if (!data) return error ? <ErrorLine error={error} /> : <p>Loading…</p>;
+  if (!data) return error ? <ErrorLine error={error} /> : <p className="muted">Loading…</p>;
   const find = (scope: InstructionScope, key: string) => data.custom.find((c) => c.scope === scope && c.key === key) ?? null;
   const def = find("default", "");
   // Custom series no longer in any transcript still need to be editable/removable.
@@ -87,7 +86,7 @@ function Instructions() {
       <Editor path="/instructions/default" saved={def} placeholder="Empty: built-in instructions per meeting type." inherited="built-in instructions per meeting type" onSaved={load} />
 
       <h4>Per meeting type</h4>
-      <p style={muted}>Types are detected from the calendar event (title keywords, 2 attendees = 1:1), else by the LLM.</p>
+      <p className="muted">Types are detected from the calendar event (title keywords, 2 attendees = 1:1), else by the LLM.</p>
       {MEETING_TYPES.map((m) => {
         const saved = find("type", m.type);
         return (
@@ -108,14 +107,14 @@ function Instructions() {
       })}
 
       <h4>Per recurring series</h4>
-      {!series.length && <p style={muted}>No recurring meetings recorded yet.</p>}
+      {!series.length && <p className="muted">No recurring meetings recorded yet.</p>}
       {series.map((s) => {
         const saved = find("series", s.seriesId);
         return (
           <details key={s.seriesId} open={!!saved}>
             <summary>
               <strong>{s.title ?? s.seriesId}</strong>{" "}
-              <span style={muted}>{s.count ? `${s.count} recorded, last ${formatDateTime(s.lastStartedAt)}` : "no recordings left"}</span> <Badge custom={!!saved} />
+              <span className="muted">{s.count ? `${s.count} recorded, last ${formatDateTime(s.lastStartedAt)}` : "no recordings left"}</span> <Badge custom={!!saved} />
             </summary>
             <Editor
               path={`/instructions/series/${encodeURIComponent(s.seriesId)}`}
@@ -132,7 +131,7 @@ function Instructions() {
 }
 
 function Badge({ custom }: { custom: boolean }) {
-  return custom ? <span style={{ fontSize: "0.75rem", background: "#e6f0ff", borderRadius: 4, padding: "0 0.3rem" }}>custom</span> : null;
+  return custom ? <span className="badge">custom</span> : null;
 }
 
 function Editor(props: { path: string; saved: CustomInstruction | null; placeholder: string; inherited: string; template?: string; onSaved: () => void }) {
@@ -151,19 +150,18 @@ function Editor(props: { path: string; saved: CustomInstruction | null; placehol
   const save = () => run(draft.trim() ? api(path, { method: "PUT", body: { text: draft } }) : api(path, { method: "DELETE" }));
 
   return (
-    <div style={{ margin: "0.5rem 0 1rem" }}>
+    <div className="editor">
       <textarea
         value={draft}
         placeholder={placeholder}
         onChange={(e) => setDraft(e.target.value)}
         rows={Math.min(14, Math.max(4, draft.split("\n").length + 1))}
-        style={{ width: "100%", fontFamily: "ui-monospace, monospace", fontSize: "0.85rem" }}
       />
-      <div style={{ display: "flex", gap: "0.5rem", alignItems: "baseline" }}>
-        <button disabled={!dirty || busy} onClick={save}>Save</button>
+      <div className="row">
+        <button className="primary" disabled={!dirty || busy} onClick={save}>Save</button>
         {saved && <button disabled={busy} onClick={() => run(api(path, { method: "DELETE" }))}>Remove</button>}
         {template && !draft && <button onClick={() => setDraft(template)}>Start from built-in</button>}
-        <span style={muted}>{saved ? `Custom, saved ${formatDateTime(saved.updatedAt)}` : `Not set: uses ${inherited}.`}</span>
+        <span className="muted">{saved ? `Custom, saved ${formatDateTime(saved.updatedAt)}` : `Not set: uses ${inherited}.`}</span>
       </div>
       <ErrorLine error={error} />
     </div>
