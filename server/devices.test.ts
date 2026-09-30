@@ -31,9 +31,9 @@ describe("Devices", () => {
   beforeEach(async () => {
     dir = mkdtempSync(join(tmpdir(), "pa-dev-"));
     store = new Store(dir);
-    config = parseConfig({ users: ["alice", "bob"] });
+    config = parseConfig({ users: ["alice", "bob"], auth: { signup: true } });
     t = 1_000_000;
-    const auth = new Auth(store, () => config, () => t);
+    const auth = new Auth(store, () => config, () => t, 0);
     alice = (await auth.signup({ username: "alice", password: "password1" })).user;
     bob = (await auth.signup({ username: "bob", password: "password1" })).user;
     devices = new Devices(store, (u) => auth.isEnabled(u), () => t);

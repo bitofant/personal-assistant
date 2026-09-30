@@ -5,6 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { AddressInfo } from "node:net";
 import type {
+  AuthOptionsResponse,
   DeviceListResponse,
   DeviceMeResponse,
   InstructionsResponse,
@@ -26,11 +27,11 @@ let dir: string;
 let app: App;
 let server: Server;
 let base: string;
-let config: Config = parseConfig({ users: ["alice"] });
+let config: Config = parseConfig({ users: ["alice"], auth: { signup: true } });
 
 beforeAll(async () => {
   dir = mkdtempSync(join(tmpdir(), "pa-e2e-"));
-  app = createApp({ dataDir: dir, getConfig: () => config, version: "test" });
+  app = createApp({ dataDir: dir, getConfig: () => config, version: "test", passwordAttemptIntervalMs: 0 });
   server = createServer((req, res) => void app.handleApi(req, res));
   await new Promise<void>((r) => server.listen(0, "127.0.0.1", r));
   base = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
@@ -483,6 +484,22 @@ describe("API flow", () => {
     expect((await fetch(`${base}/api/auth/me`, { headers: { cookie } })).status).toBe(401);
   });
 
+  it("signup switch: options endpoint + 403 when off (live config)", async () => {
+    const opts = async () => (await (await fetch(`${base}/api/auth/options`)).json()) as AuthOptionsResponse;
+    const prev = config;
+    try {
+      config = parseConfig({ users: ["alice"], auth: { signup: true } });
+      expect(await opts()).toEqual({ signup: true });
+      config = parseConfig({ users: ["alice"] });
+      expect(await opts()).toEqual({ signup: false });
+      const r = await post("/api/auth/signup", { username: "mallory", password: "password1" });
+      expect(r.status).toBe(403);
+      expect(((await r.json()) as { message: string }).message).toMatch(/disabled/);
+    } finally {
+      config = prev;
+    }
+  });
+
   it("unknown route 404, wrong method 405, JSON errors", async () => {
     const r = await fetch(`${base}/api/nope`);
     expect(r.status).toBe(404);
@@ -497,5 +514,27 @@ describe("API flow", () => {
       body: JSON.stringify({ username: "alice", password: "x".repeat(2 * 1024 * 1024) }),
     });
     expect(res.status).toBe(413);
+  });
+});
+
+describe("login throttle (default interval)", () => {
+  it("second attempt within 1s → 429 + Retry-After, JSON body", async () => {
+    const d = mkdtempSync(join(tmpdir(), "pa-e2e-throttle-"));
+    const a = createApp({ dataDir: d, getConfig: () => config, version: "test" });
+    const s = createServer((req, res) => void a.handleApi(req, res));
+    await new Promise<void>((r) => s.listen(0, "127.0.0.1", r));
+    const url = `http://127.0.0.1:${(s.address() as AddressInfo).port}/api/auth/login`;
+    const login = () => fetch(url, { method: "POST", ...json({ username: "nobody", password: "password1" }) });
+    try {
+      expect((await login()).status).toBe(401);
+      const r = await login();
+      expect(r.status).toBe(429);
+      expect(r.headers.get("retry-after")).toBe("1");
+      expect(((await r.json()) as { message: string }).message).toMatch(/Too many attempts/);
+    } finally {
+      await new Promise((r) => s.close(r));
+      await a.close();
+      rmSync(d, { recursive: true, force: true });
+    }
   });
 });

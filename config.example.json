@@ -1,6 +1,7 @@
 {
   "server": { "host": "127.0.0.1", "port": 4200 },
   "users": ["alice"],
+  "auth": { "signup": false },
   "llm": {
     "providers": [
       { "id": "local", "baseUrl": "http://localhost:8000/v1", "apiKey": null, "models": ["qwen3-32b", "bge-m3"] },

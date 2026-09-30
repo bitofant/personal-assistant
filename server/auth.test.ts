@@ -3,7 +3,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { IncomingMessage } from "node:http";
-import { Auth, hashPassword, parseCredentials, SESSION_COOKIE, SESSION_TTL_MS, verifyPassword } from "./auth.js";
+import { Auth, hashPassword, parseCredentials, SESSION_COOKIE, SESSION_TTL_MS, Throttle, verifyPassword } from "./auth.js";
 import { parseConfig, type Config } from "./config.js";
 import { Store } from "./db.js";
 
@@ -29,6 +29,21 @@ describe("password hashing", () => {
   });
 });
 
+describe("Throttle", () => {
+  it("allows one take per interval, reports the wait otherwise", () => {
+    let t = 5_000;
+    const th = new Throttle(1000, () => t);
+    expect(th.take()).toBe(0);
+    t += 400;
+    expect(th.take()).toBe(600);
+    // Rejected takes don't push the slot back (else a steady flood would lock everyone out forever).
+    t += 599;
+    expect(th.take()).toBe(1);
+    t += 1;
+    expect(th.take()).toBe(0);
+  });
+});
+
 describe("Auth", () => {
   let dir: string;
   let store: Store;
@@ -40,9 +55,9 @@ describe("Auth", () => {
   beforeEach(() => {
     dir = mkdtempSync(join(tmpdir(), "pa-auth-"));
     store = new Store(dir);
-    config = parseConfig({ users: ["alice"] });
+    config = parseConfig({ users: ["alice"], auth: { signup: true } });
     t = 1_000_000;
-    auth = new Auth(store, () => config, () => t);
+    auth = new Auth(store, () => config, () => t, 0);
   });
   afterEach(() => {
     store.close();
@@ -97,5 +112,55 @@ describe("Auth", () => {
     const rows = store.app.prepare("SELECT token_hash FROM sessions").all() as { token_hash: string }[];
     expect(rows.length).toBe(1);
     expect(rows[0].token_hash).not.toContain(token);
+  });
+});
+
+describe("Auth: signup switch + attempt throttle", () => {
+  let dir: string;
+  let store: Store;
+  let config: Config;
+  let t: number;
+  let auth: Auth;
+
+  beforeEach(() => {
+    dir = mkdtempSync(join(tmpdir(), "pa-auth-"));
+    store = new Store(dir);
+    config = parseConfig({ users: ["alice"], auth: { signup: true } });
+    t = 1_000_000;
+    auth = new Auth(store, () => config, () => t); // default interval
+  });
+  afterEach(() => {
+    store.close();
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  it("signup off (default) → 403, no account created; config reload applies live", async () => {
+    config = parseConfig({ users: ["alice"] });
+    expect(auth.signupEnabled()).toBe(false);
+    await expect(auth.signup({ username: "alice", password: "password1" })).rejects.toMatchObject({ status: 403 });
+    expect(store.app.prepare("SELECT COUNT(*) AS n FROM users").get()).toEqual({ n: 0 });
+    config = parseConfig({ users: ["alice"], auth: { signup: true } });
+    expect((await auth.signup({ username: "alice", password: "password1" })).enabled).toBe(true);
+  });
+
+  it("one login/signup attempt per second globally → 429 with retry-after", async () => {
+    await auth.signup({ username: "alice", password: "password1" });
+    // Counts regardless of user or outcome.
+    await expect(auth.login({ username: "zed", password: "password1" })).rejects.toMatchObject({
+      status: 429,
+      headers: { "retry-after": "1" },
+    });
+    t += 1000;
+    await expect(auth.login({ username: "zed", password: "password1" })).rejects.toMatchObject({ status: 401 });
+    t += 999;
+    await expect(auth.login({ username: "alice", password: "password1" })).rejects.toMatchObject({ status: 429 });
+    t += 1;
+    expect((await auth.login({ username: "alice", password: "password1" })).user.username).toBe("alice");
+  });
+
+  it("disabled signup doesn't use up the attempt slot", async () => {
+    config = parseConfig({ users: ["alice"] });
+    await expect(auth.signup({ username: "x", password: "password1" })).rejects.toMatchObject({ status: 403 });
+    await expect(auth.login({ username: "zed", password: "password1" })).rejects.toMatchObject({ status: 401 });
   });
 });

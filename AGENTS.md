@@ -44,7 +44,7 @@ The repo has a few components:
 - osx: meeting detection + calendar model (pure PACore) built, not wired (no EventKit/Core Audio wrappers yet).
 - osx: `pa pair` / `pa status` / `pa transcribe --upload` / `pa queue` / `pa run` (upload worker only) verified live on the Mac (2026-09-30 mac-check, server via ssh tunnel): pair (no Keychain dialog), re-pair reuses token, upload + replace, summary + search OK, outage → retry, revoke → halt → re-pair → resume, SIGTERM exit. 410 drop not exercised on the Mac (transcript wasn't deleted before the step; server + web delete re-verified live) → redo `--only queue`.
 - osx: `Package.resolved` created on the Mac, not yet in git (pins FluidAudio; should be committed).
-- **Next = one Mac session** covering roadmap 1–4: run `osx/mac-check.sh` (guided; see `osx/CHECKLIST.md`) → bring back its `report-<stamp>.tgz`. Summary/search tuning waits for real transcripts.
+- Mac session 1 (roadmap 1–4) done 2026-09-30; capture/bench/transcribe results assumed OK (user decision, report not reviewed). **Next = remote access (8a) → daemon (8).** Summary/search tuning waits for real transcripts.
 - Everything else below = planned, not built.
 - Default port **4200** (4000/4100 taken on the dev box by other services).
 - Monorepo: `server/` (Node backend), `web/` (React frontend), `shared/` (TS wire types), `osx/` (headless Swift CLI).
@@ -53,16 +53,16 @@ The repo has a few components:
 
 ## Roadmap (next up, in order)
 - Order = riskiest unknowns first, then thinnest end-to-end slice (Mac audio → server transcript), then value-add. Tick off / reorder as done.
-1. **osx: finish `pa test-capture` on the Mac** — Zoom tap + mic done (verified live); still: global tap (now the only mode) live run, listen to WAVs. Record findings "verified live".
-2. **osx: transcription spike** — PACore merge logic built (see osx tech → Transcription). FluidAudio adapters + `pa transcribe` written but **never compiled** (Linux can't build `pa`). Left: on the Mac `swift build`, run `osx/bench-asr.sh` (speed/accuracy/languages), `pa transcribe --upload` = first real end-to-end transcript.
-3. **osx: `pa pair` / `pa status`** — built (see osx tech → Server client); left: first run on the Mac (Keychain, `Host` name, real server over https).
-4. **osx: `pa upload <wav-dir>`** — `pa upload <json>` done; left: transcribe WAVs (item 2) → `TranscriptUpload` → first real end-to-end transcript.
+1. ~~**osx: `pa test-capture` on the Mac**~~ — done (global tap assumed OK, not reviewed).
+2. ~~**osx: transcription spike**~~ — FluidAudio compiles + runs on the Mac; `pa transcribe --upload` → first real transcript + summary (verified live). Bench numbers not reviewed.
+3. ~~**osx: `pa pair` / `pa status`**~~ — verified live on the Mac (via ssh tunnel; https server URL pending 8a).
+4. ~~**osx: end-to-end upload**~~ — done via `pa transcribe --upload` (verified live).
 5. ~~**server: LLM client + job queue**~~ — done (see Server design → LLM / Background jobs).
 6. **server: summaries** — built: summarize job, rule + LLM classify, built-in + custom instructions (series > type > default), per-user model pick, settings page, long-transcript map-reduce. Series type reuse done. Left (low value, deferred): "instructions changed" stale flag; resume part notes after an outage (now restarts from scratch).
 7. **server: search** — v1 done (FTS5 keyword + date/attendee filters, see Server design → Search). Next v2: chunk+embed w/ `sqlite-vec`, hybrid merge, optional RAG answer — blocked on real transcripts (to judge retrieval) + an embedding model on the dev box. Pagination skipped: >50 hits → refine with filters.
 8. **osx: daemon (`pa run`)** — EventKit work calendars + meeting detection (pure logic done; left: EventKit + per-process mic-in-use + meeting-app wrappers, `pa calendars` to list names for `workCalendars`), auto capture → transcribe → upload queue (`pa run` = upload worker only so far; see osx Upload queue), raw-audio retention; `osx/install.sh` LaunchAgent; `os.Logger` + log file.
 9. **Speaker naming** — label speakers in web UI, per-user voice embeddings, match vs attendees; LLM name proposals never overwrite user labels.
-8a. **Remote access** — needed before `pa run`; plan in `docs/remote-access.md`. `server.host` bind done (see Config). Left: Tailscale `serve` (recommended; work-Mac policy decides) else LAN-only nginx vhost (`pa.riuna.com`, existing wildcard cert, bind `172.17.0.1` since nginx is in Docker, `client_max_body_size 25m`). Public Cloudflare Tunnel rejected for now (CF sees plaintext; no login rate limit). Caddy rejected (:443 = existing nginx).
+8a. **Remote access** — needed before `pa run`; plan in `docs/remote-access.md`. `server.host` bind done (see Config). Tailscale ruled out (not allowed on the work Mac). Login throttle + signup switch done (see Auth). Open: public exposure vs device-API-only public vs LAN-only nginx vhost (`pa.riuna.com`, wildcard cert, bind `172.17.0.1`, `client_max_body_size 25m`). Caddy rejected (:443 = existing nginx).
 10. **Ops/polish** — per-transcript delete done (see Transcript delete); per-user export/delete (must also purge user from backups), device list/revoke UI polish. Backups done (see Server design → Backups).
 
 ## Commands
@@ -126,7 +126,8 @@ The repo has a few components:
   - Injected `now()` everywhere for expiry tests.
 - **Auth (web, built):** `server/auth.ts` owns all of it; rest of server only calls `authedUser(req)`/`requireUser`.
   - scrypt (`salt:hash`), server-side sessions in SQLite (sha256 of token), HttpOnly SameSite=Lax cookie `pa_session`, 30d sliding.
-  - Signup allowed; login refused (403, only after password OK) unless username in `config.json` `users`.
+  - Signup only if `config.json` `auth.signup` (default **false**; else 403 before hashing); web hides the tab via `GET /api/auth/options`. Login refused (403, only after password OK) unless username in `users`.
+  - Login + signup share a **global** `Throttle`: 1 attempt/s across all clients → 429 + `Retry-After` (via `HttpError.headers`), checked before parsing/scrypt so floods stay cheap. Rejected attempts don't extend the wait. Global = an attacker can delay your login but can't guess fast or burn CPU (user decision). Tests pass interval 0 (`Auth` 4th arg / `passwordAttemptIntervalMs`).
   - `config.json` polled (`watchFile`) and reloaded live; invalid edit → keep previous config.
   - Enabled check **per request**, not just at login: removing a user cuts off sessions + devices immediately. Don't regress.
   - CSRF: SameSite=Lax + `readJson` requires `content-type: application/json` (415 otherwise).

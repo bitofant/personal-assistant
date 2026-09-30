@@ -32,6 +32,8 @@ export interface Config {
   server: { host: string; port: number };
   /** Usernames allowed to log in; registered accounts stay disabled until listed. */
   users: string[];
+  /** signup = whether POST /api/auth/signup accepts new accounts (default off: server may face the internet). */
+  auth: { signup: boolean };
   llm: {
     providers: LlmProvider[];
     /** Non-empty; first = default, others = user-selectable alternatives. Unrouted task = feature disabled (fail safe), not an error. */
@@ -69,6 +71,11 @@ export function parseConfig(raw: unknown): Config {
     // Canonical usernames: trimmed, lowercase.
     else users.push(u.trim().toLowerCase());
   }
+
+  if (obj.auth !== undefined && !isRecord(obj.auth)) errors.push("auth must be an object");
+  const rawAuth = isRecord(obj.auth) ? obj.auth : {};
+  const signup = rawAuth.signup ?? false;
+  if (typeof signup !== "boolean") errors.push("auth.signup must be true or false");
 
   const llm = isRecord(obj.llm) ? obj.llm : {};
   const providers: LlmProvider[] = [];
@@ -127,6 +134,7 @@ export function parseConfig(raw: unknown): Config {
   return {
     server: { host: host as string, port: port as number },
     users,
+    auth: { signup: signup as boolean },
     llm: { providers, tasks },
     backup: { dir: (backupDir as string).trim(), keep: keep as number },
   };

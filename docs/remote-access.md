@@ -7,7 +7,7 @@ Status: bind address **built** (`server.host`); HTTPS access **planned, not buil
 - **HTTPS with a publicly trusted cert.** `pa` only accepts `https://`, or `http://` to loopback (`parseServerURL`). It uses `URLSession` with default trust, so there's no pinning and no custom CA. A self-signed cert would need a CA installed on the (work) Mac, so it's out.
 - **Works unattended.** No per-session login, no browser-based SSO step in front of `/api/device/*`. The device authenticates with its bearer token only.
 - **Transcripts stay private.** They're work meetings, so plaintext should only exist on the Mac and the dev box. Prefer end-to-end TLS/WireGuard over a CDN that terminates TLS.
-- **Minimal attack surface.** The server has no login rate limiting and allows open signup (accounts start disabled), so it isn't hardened for the public internet yet.
+- **Minimal attack surface.** Login + signup are throttled globally (1 attempt/s) and signup is off by default (`auth.signup`). Still no per-IP limits or audit log.
 - **Uploads up to 20 MB** (server body limit) must pass through the proxy.
 - **Offline is OK.** The daemon's upload queue (planned) retries until the server is reachable, so "reachable only from some networks" delays uploads but doesn't lose data.
 
@@ -25,7 +25,7 @@ Status: bind address **built** (`server.host`); HTTPS access **planned, not buil
 |---|---|---|---|---|---|---|
 | **A. Tailscale `serve`** | anywhere (tailnet only) | Mac + dev box | `*.ts.net` LE cert, auto | `127.0.0.1` | Tailscale on box + Mac | **Recommended**, if the work Mac allows Tailscale |
 | **B. Existing nginx, LAN-only hostname** | home LAN only | Mac + dev box | existing `*.riuna.com` wildcard | `172.17.0.1` (docker0) | none | **Fallback**: zero new software, uploads wait until you're home |
-| C. Existing nginx + Cloudflare Tunnel (public) | anywhere (internet) | + Cloudflare | existing | `172.17.0.1` | none | Not now: Cloudflare terminates TLS on work transcripts, and the server isn't hardened for the internet |
+| C. Existing nginx + Cloudflare Tunnel (public) | anywhere (internet) | + Cloudflare | existing | `172.17.0.1` | none | Not now: Cloudflare terminates TLS on work transcripts |
 | D. Caddy | depends | depends | Caddy ACME | `127.0.0.1` | Caddy | Rejected: :443 is already nginx's, and nginx already has a renewing wildcard cert. Caddy would only duplicate that |
 | E. Permanent SSH tunnel (`autossh` LaunchAgent) | wherever sshd is reachable | Mac + dev box | none (http over loopback) | `127.0.0.1` | autossh + SSH key on Mac | Stopgap only: a second daemon to babysit, and a silent tunnel failure looks like "server down" |
 
@@ -80,7 +80,7 @@ Add a vhost `pa.riuna.com` to `~/src/webserver/nginx/conf.d/`, using the wildcar
 
 This is option B plus a tunnel route. It would work from anywhere with no software on the Mac, but:
 - Cloudflare decrypts every upload (work meeting content).
-- Login/signup/pair would be on the internet. That first needs login rate limiting, and ideally signup off or behind Cloudflare Access for the web UI paths, leaving `/api/device/*` and `/api/devices/pair` open (bearer auth; Access can't be used by an unattended daemon without service-token headers in `pa`).
+- Login/signup/pair would be on the internet. Login throttle + signup switch now exist; optionally put the web UI behind Cloudflare Access for the web UI paths, leaving `/api/device/*` and `/api/devices/pair` open (bearer auth; Access can't be used by an unattended daemon without service-token headers in `pa`).
 
 Revisit if A is impossible and home-LAN-only uploads turn out too slow in practice.
 

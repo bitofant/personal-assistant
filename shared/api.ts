@@ -32,6 +32,12 @@ export interface SignupResponse {
   enabled: boolean;
 }
 
+/** GET /api/auth/options — unauthenticated; what the login page may offer. */
+export interface AuthOptionsResponse {
+  /** false = no Sign up tab; server refuses signups (403). */
+  signup: boolean;
+}
+
 // ---- Device pairing ----
 
 /** POST /api/devices/pair, header `Authorization: Bearer <client-generated token>`. */

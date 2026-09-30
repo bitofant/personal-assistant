@@ -8,7 +8,7 @@ Self-hosted meeting assistant. A headless macOS agent records and transcribes yo
 - `osx/`: headless Swift CLI `pa` (audio capture spike, plus pair/status/upload to the server)
 
 Status: early. The server supports:
-- web accounts (sign up, then an admin enables the account)
+- web accounts (sign up while `auth.signup` is on, then an admin enables the account)
 - pairing a Mac as a device (you approve it with a 6-digit code)
 - transcript upload from a paired device
 - a web UI to browse transcripts, and to delete one (with its summary and search entries). A deleted transcript can't be uploaded again: the server answers `410 Gone`. Existing backups keep it until they rotate out.
@@ -31,7 +31,8 @@ npm run dev            # http://localhost:4200, Vite HMR on the same port
 All configuration is in `config.json`. There are no env vars.
 
 - `server`: `{"host": "127.0.0.1", "port": 4200}`. `host` must be an IP address (not a hostname); see Production below.
-- `users`: usernames allowed to log in. Anyone can register, but an account is disabled until it's listed here. The server reloads `config.json` automatically, so you don't need to restart it. Removing a username logs that user out right away and blocks their devices.
+- `users`: usernames allowed to log in. A registered account stays disabled until it's listed here. The server reloads `config.json` automatically, so you don't need to restart it. Removing a username logs that user out right away and blocks their devices.
+- `auth.signup` (default `false`): whether the login page offers Sign up and the server accepts new accounts. To add a user: set it to `true`, let them register, set it back to `false`, then list them in `users`. Login + signup attempts are limited to one per second across all clients (429 otherwise).
 - `llm.providers`: OpenAI-compatible endpoints (local vLLM/llama.cpp, OpenRouter, …).
 - `llm.tasks`: routes `summary` / `search` / `embed` to a provider+model. If a task isn't routed, that feature is off. Jobs that need it wait in the queue until you route it.
   - A task can also take a list of routes. The first is the default. For `summary`, each user can pick any listed route in the web UI, e.g. `[{local}, {openrouter}]` to offer a paid remote model. Users can only pick routes you list here.
