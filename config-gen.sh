@@ -78,6 +78,7 @@ cat > "$CONFIG_FILE" <<EOF
 {
   "server": { "host": $(json_str "$HOST"), "port": $PORT },
   "users": $(json_list "$USERS"),
+  "auth": { "signup": false },
   "llm": {
     "providers": [
       $PROVIDERS

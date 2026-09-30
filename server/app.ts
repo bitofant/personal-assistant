@@ -8,6 +8,7 @@ import type {
   SearchResponse,
   SettingsResponse,
   SignupResponse,
+  AuthOptionsResponse,
   SummarizeResponse,
   TranscriptDetail,
   TranscriptListResponse,
@@ -33,6 +34,8 @@ export interface AppOptions {
   getConfig: () => Config;
   version: string;
   now?: () => number;
+  /** Min ms between login/signup attempts (global); tests pass 0. */
+  passwordAttemptIntervalMs?: number;
   /** Injected in tests; default = OpenAI-compatible client over config.json routes. */
   llm?: Llm;
   /** Job type → handler; built from store + llm. Tests override. */
@@ -75,7 +78,7 @@ function defaultJobHandlers(deps: JobDeps): Record<string, JobHandler> {
 export function createApp(opts: AppOptions): App {
   const now = opts.now ?? Date.now;
   const store = new Store(opts.dataDir);
-  const auth = new Auth(store, opts.getConfig, now);
+  const auth = new Auth(store, opts.getConfig, now, opts.passwordAttemptIntervalMs);
   const devices = new Devices(store, (u) => auth.isEnabled(u), now);
   const llm = opts.llm ?? createLlm({ getConfig: opts.getConfig });
   const jobs = new JobQueue(store.app, now);
@@ -107,6 +110,9 @@ export function createApp(opts: AppOptions): App {
     auth.logout(req);
     res.setHeader("set-cookie", clearSessionCookie());
     sendNoContent(res);
+  });
+  route("GET", "/api/auth/options", ({ res }) => {
+    sendJson(res, { signup: auth.signupEnabled() } satisfies AuthOptionsResponse);
   });
   route("GET", "/api/auth/me", ({ req, res }) => {
     sendJson(res, { username: auth.requireUser(req).username } satisfies MeResponse);
@@ -267,6 +273,7 @@ export function createApp(opts: AppOptions): App {
         if (err instanceof HttpError) {
           // Body may be unread (e.g. 401 before readJson); close so the client doesn't hang uploading.
           if (!req.complete) res.setHeader("connection", "close");
+          for (const [k, v] of Object.entries(err.headers)) res.setHeader(k, v);
           return sendError(res, err.status, err.message);
         }
         console.error(`${req.method} ${path} failed:`, err);

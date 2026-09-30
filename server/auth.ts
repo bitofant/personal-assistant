@@ -65,21 +65,59 @@ export function newToken(): string {
   return randomBytes(32).toString("base64url");
 }
 
+/** Global (not per IP/user): caps password guessing + scrypt CPU from any number of clients. */
+export const PASSWORD_ATTEMPT_INTERVAL_MS = 1000;
+
+/** At most one `take()` per interval; returns 0 = allowed, else ms until the next slot. */
+export class Throttle {
+  private last = -Infinity;
+  constructor(
+    private readonly intervalMs: number,
+    private readonly now: () => number,
+  ) {}
+
+  take(): number {
+    const t = this.now();
+    const wait = this.last + this.intervalMs - t;
+    if (wait > 0) return wait;
+    this.last = t;
+    return 0;
+  }
+}
+
 // Burned on unknown-user logins so response time doesn't reveal which usernames exist.
 const DUMMY_HASH = hashPassword("dummy-password-for-timing");
 
 export class Auth {
+  private readonly attempts: Throttle;
+
   constructor(
     private readonly store: Store,
     private readonly getConfig: () => Config,
     private readonly now: () => number = Date.now,
-  ) {}
+    attemptIntervalMs = PASSWORD_ATTEMPT_INTERVAL_MS,
+  ) {
+    this.attempts = new Throttle(attemptIntervalMs, now);
+  }
+
+  /** Before any parsing/scrypt: rejected attempts must stay cheap. */
+  private throttle(): void {
+    const wait = this.attempts.take();
+    if (wait > 0)
+      throw new HttpError(429, "Too many attempts; try again in a moment.", { "retry-after": String(Math.ceil(wait / 1000)) });
+  }
+
+  signupEnabled(): boolean {
+    return this.getConfig().auth.signup;
+  }
 
   isEnabled(username: string): boolean {
     return this.getConfig().users.includes(username);
   }
 
   async signup(raw: unknown): Promise<{ user: User; enabled: boolean }> {
+    if (!this.signupEnabled()) throw new HttpError(403, "Sign-up is disabled on this server.");
+    this.throttle();
     const { username, password } = parseCredentials(raw);
     if (password.length < MIN_PASSWORD) throw new HttpError(400, `Password must be at least ${MIN_PASSWORD} characters.`);
     const hash = await hashPassword(password);
@@ -93,6 +131,7 @@ export class Auth {
 
   /** Returns a new session token. Disabled status revealed only after the password checks out. */
   async login(raw: unknown): Promise<{ user: User; token: string }> {
+    this.throttle();
     const { username, password } = parseCredentials(raw);
     const row = this.store.app
       .prepare("SELECT id, password_hash FROM users WHERE username = ?")

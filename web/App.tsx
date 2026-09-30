@@ -5,6 +5,7 @@ import type {
   MeResponse,
   SettingsResponse,
   SignupResponse,
+  AuthOptionsResponse,
   SummarizeResponse,
   TranscriptDetail,
   TranscriptListItem,
@@ -116,6 +117,11 @@ function Login({ onLogin }: { onLogin: (me: MeResponse) => void }) {
   const [error, setError] = useState<string | null>(null);
   const [message, setMessage] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  // Hidden until the server says signup is on (default off); a failed fetch keeps it hidden.
+  const [signup, setSignup] = useState(false);
+  useEffect(() => {
+    api<AuthOptionsResponse>("/auth/options").then((o) => setSignup(o.signup), () => {});
+  }, []);
 
   const submit = async (e: FormEvent) => {
     e.preventDefault();
@@ -141,14 +147,16 @@ function Login({ onLogin }: { onLogin: (me: MeResponse) => void }) {
     <div className="login">
       <form className="login-card" onSubmit={(e) => void submit(e)}>
         <h1>personal-assistant</h1>
-        <div className="login-tabs">
-          <button type="button" className={mode === "login" ? "active" : ""} onClick={() => switchMode("login")}>
-            Log in
-          </button>
-          <button type="button" className={mode === "signup" ? "active" : ""} onClick={() => switchMode("signup")}>
-            Sign up
-          </button>
-        </div>
+        {signup && (
+          <div className="login-tabs">
+            <button type="button" className={mode === "login" ? "active" : ""} onClick={() => switchMode("login")}>
+              Log in
+            </button>
+            <button type="button" className={mode === "signup" ? "active" : ""} onClick={() => switchMode("signup")}>
+              Sign up
+            </button>
+          </div>
+        )}
         <label className="field-label" htmlFor="login-username">Username</label>
         <input id="login-username" autoFocus autoComplete="username" value={username} onChange={(e) => setUsername(e.target.value)} />
         <label className="field-label" htmlFor="login-password">Password</label>

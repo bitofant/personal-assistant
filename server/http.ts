@@ -3,7 +3,11 @@ import type { ErrorResponse } from "../shared/api.js";
 
 /** Thrown by handlers; router turns it into a JSON error response. */
 export class HttpError extends Error {
-  constructor(readonly status: number, message: string) {
+  constructor(
+    readonly status: number,
+    message: string,
+    readonly headers: Record<string, string> = {},
+  ) {
     super(message);
   }
 }

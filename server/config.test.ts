@@ -7,6 +7,7 @@ describe("parseConfig", () => {
     expect(parseConfig({})).toEqual({
       server: { host: DEFAULT_HOST, port: DEFAULT_PORT },
       users: [],
+      auth: { signup: false },
       llm: { providers: [], tasks: {} },
       backup: { dir: "data/backups", keep: 14 },
     });
@@ -32,6 +33,13 @@ describe("parseConfig", () => {
     expect(localUrl({ host: "0.0.0.0", port: 4200 })).toBe("http://127.0.0.1:4200");
     expect(localUrl({ host: "::", port: 4200 })).toBe("http://127.0.0.1:4200");
     expect([isWildcardHost("0.0.0.0"), isWildcardHost("::"), isWildcardHost("127.0.0.1")]).toEqual([true, true, false]);
+  });
+
+  it("auth.signup: off by default, boolean only", () => {
+    expect(parseConfig({ auth: {} }).auth).toEqual({ signup: false });
+    expect(parseConfig({ auth: { signup: true } }).auth).toEqual({ signup: true });
+    expect(() => parseConfig({ auth: { signup: "yes" } })).toThrow(/auth.signup must be true or false/);
+    expect(() => parseConfig({ auth: true })).toThrow(/auth must be an object/);
   });
 
   it("backup: dir + keep, validated", () => {
