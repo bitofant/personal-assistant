@@ -42,8 +42,8 @@ The repo has a few components:
 - Server (built): SQLite store, web auth, device pairing + approval, transcript ingest/list/detail/delete, minimal web UI, LLM client + job queue, summaries (+ web view with job status), custom instructions + LLM meeting-type classify + per-user summary model (settings page), search v1 (FTS5 keyword + date/attendee filters + web page), nightly SQLite backups (`npm run backup` + systemd timer).
 - osx: `pa test-capture` spike runs on the Mac; Zoom tap + mic (no VP) record (verified live).
 - osx: meeting detection + calendar model (pure PACore) built, not wired (no EventKit/Core Audio wrappers yet).
-- osx: upload queue + `pa run` (upload worker only) + `pa queue` built; verified live on Linux harness (unpaired → pair → resume, outage → retry, revoke → re-pair → resume, 410 drop); not yet on the Mac.
-- osx: `pa pair` / `pa status` / `pa upload <json>` built; PACore + CLI logic verified live on Linux vs scratch server (Keychain stubbed); not yet run on the Mac.
+- osx: `pa pair` / `pa status` / `pa transcribe --upload` / `pa queue` / `pa run` (upload worker only) verified live on the Mac (2026-09-30 mac-check, server via ssh tunnel): pair (no Keychain dialog), re-pair reuses token, upload + replace, summary + search OK, outage → retry, revoke → halt → re-pair → resume, SIGTERM exit. 410 drop not exercised on the Mac (transcript wasn't deleted before the step; server + web delete re-verified live) → redo `--only queue`.
+- osx: `Package.resolved` created on the Mac, not yet in git (pins FluidAudio; should be committed).
 - **Next = one Mac session** covering roadmap 1–4: run `osx/mac-check.sh` (guided; see `osx/CHECKLIST.md`) → bring back its `report-<stamp>.tgz`. Summary/search tuning waits for real transcripts.
 - Everything else below = planned, not built.
 - Default port **4200** (4000/4100 taken on the dev box by other services).

@@ -246,7 +246,7 @@ st_upload() {
   need_build; need_stamp
   [ -n "$server" ] || need_server
   need_paired
-  run upload"$pa" transcribe --stamp "$stamp" --upload || return
+  run upload "$pa" transcribe --stamp "$stamp" --upload || return
   expect upload '^(uploaded|replaced) ' "uploaded"
   run upload-again "$pa" transcribe --stamp "$stamp" --no-diarize --upload
   expect upload-again '^replaced ' "re-upload replaced (same id, no duplicate)"
@@ -290,7 +290,9 @@ st_queue() {
   # Delete on server → tombstone → queue drops it.
   pause "Delete this transcript in the web UI (open it → Delete transcript)."
   run deleted-upload "$pa" transcribe --stamp "$stamp" --no-diarize --upload
-  expect deleted-upload '^dropped .*deleted on server' "upload of a deleted transcript is dropped"
+  expect deleted-upload '^dropped .*deleted on server' "upload of a deleted transcript is dropped" ||
+    { grep -qE '^(uploaded|replaced) ' "$report/deleted-upload.log" &&
+      note "    server accepted it → the transcript wasn't deleted in the web UI (redo: --only queue)"; }
   run final-queue "$pa" queue && expect final-queue '^queue empty' "queue empty again"
   # Its id is tombstoned now → next run gets a fresh id.
   mv "$(transcript_json)" "$captures/pa-$stamp-transcript.deleted-$(date +%s).json"
