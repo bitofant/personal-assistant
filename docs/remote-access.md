@@ -1,6 +1,9 @@
 # Remote access: Mac → server over HTTPS
 
-Status: bind address **built** (`server.host`); HTTPS access **planned, not built**. The Mac currently reaches the server through a manual SSH tunnel (`ssh -N -L 4200:localhost:4200 <devbox>` → `http://localhost:4200`, see `osx/CHECKLIST.md` step 4). That's fine for the first Mac session. The daemon (`pa run`, roadmap item 8) needs something permanent: it runs unattended from launchd, on any network, and nobody is around to open a tunnel.
+Status: **option B chosen and built (2026-09-30): LAN-only at `https://assistant.riuna.com`.**
+- Why: Tailscale isn't allowed on the work Mac. Public exposure through Cloudflare Tunnel was rejected because Cloudflare terminates TLS and would see transcripts. Encrypting uploads in the app was considered, but the web UI would still show transcripts to Cloudflare in plaintext, so it doesn't help.
+- Found while doing this: `assistant.riuna.com` already existed as a **public** Cloudflare Tunnel route to :4200, and the app was bound to `0.0.0.0`. Both are closed now (see below).
+- Off the home LAN the Mac can't reach the server; its upload queue holds transcripts until it's back home.
 
 ## Requirements
 
@@ -44,9 +47,17 @@ A private WireGuard network. `tailscale serve` terminates HTTPS on the dev box w
   3. Run `sudo tailscale serve --bg --https=443 http://127.0.0.1:4200`. The config persists across reboots in tailscaled state; check it with `tailscale serve status`.
 - Steps (Mac): install Tailscale, log in to the same tailnet, then open `https://<host>.<tailnet>.ts.net/api/health`.
 
-### B. Existing nginx, LAN-only hostname (fallback)
+### B. Existing nginx, LAN-only hostname (chosen, built)
 
-Add a vhost `pa.riuna.com` to `~/src/webserver/nginx/conf.d/`, using the wildcard cert that's already there. Resolve it to the LAN IP (DNS-only A record → `192.168.5.53`, or a local DNS override). Don't add a Cloudflare Tunnel route for it.
+Built as `~/src/webserver/nginx/conf.d/assistant.conf` (`assistant.riuna.com`; the name already existed, so no new DNS).
+- **DNS:** the LAN resolver (router `192.168.5.23`) answers `192.168.5.53` for `A assistant.riuna.com` (verified live); public DNS answers Cloudflare IPs. AAAA also returns Cloudflare IPv6, but the LAN has no IPv6 route, so clients fall back to IPv4.
+- **Allowlist:** `allow 192.168.5.0/24; deny all;` on :443, plus a `geo $assistant_lan` + `if` on :80. `return` runs before `allow`/`deny`, so on :80 a plain allowlist would still redirect everyone. Tunnel traffic reaches nginx from the docker bridge (`172.18.0.1`), so it's denied even if the tunnel route stays.
+- :80 only redirects to https, so passwords and tokens never cross the LAN in plaintext.
+- Verified live: via Cloudflare → 403 (`/`, `/api/health`, `POST /api/auth/login`); LAN https → 200; LAN http → 301 https; 3 MB POST → reaches the app (401, not 413).
+- **Still to do (user):** delete the `assistant.riuna.com` public hostname from the Cloudflare Tunnel (dashboard). It's harmless now (403), but while it exists a Mac off-LAN sends its bearer token through Cloudflare. After deleting it, check that the router still answers `192.168.5.53`.
+- **Restart needed** to apply `server.host: 172.17.0.1` (was `0.0.0.0` = plain HTTP on the LAN at :4200). Afterwards `localhost:4200` on the dev box stops working: use `https://assistant.riuna.com` or `http://172.17.0.1:4200`.
+
+Original plan:
 
 - Pros: nothing new to install on the work Mac. Real cert. TLS terminates on the dev box.
 - Cons: uploads only happen on the home LAN. Some routers drop DNS answers that point at private IPs (DNS-rebind protection), in which case you need a local override. A public DNS record also reveals the internal IP (minor).
@@ -101,9 +112,9 @@ Revisit if A is impossible and home-LAN-only uploads turn out too slow in practi
 
 ## Moving the Mac off the SSH tunnel
 
-1. Restart the service so `server.host` takes effect (defaults to `127.0.0.1`), and verify with `ss` as above.
-2. Set up option A (or B), then check from the Mac: `curl https://<server>/api/health`.
-3. Re-pair: `pa pair https://<server> <account>`. A different server URL means a new token and a new device. Approve the code in the web UI, then `pa status`.
+1. Restart the service so `server.host: 172.17.0.1` takes effect; `ss -ltn | grep 4200` must show `172.17.0.1:4200`.
+2. From the Mac, on the home LAN: `curl https://assistant.riuna.com/api/health`.
+3. Re-pair: `pa pair https://assistant.riuna.com <account>`. A different server URL means a new token and a new device. Approve the code in the web UI, then `pa status`.
 4. Revoke the old `localhost` device in the web UI (Devices).
 5. Upload test: `pa transcribe --upload` on an existing capture.
 6. Update `osx/CHECKLIST.md` step 4 and the `pa run` / `install.sh` docs with the permanent URL. The LaunchAgent itself needs nothing network-specific: the URL lives in app-support `config.json`, the token in the Keychain.

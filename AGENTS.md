@@ -44,7 +44,7 @@ The repo has a few components:
 - osx: meeting detection + calendar model (pure PACore) built, not wired (no EventKit/Core Audio wrappers yet).
 - osx: `pa pair` / `pa status` / `pa transcribe --upload` / `pa queue` / `pa run` (upload worker only) verified live on the Mac (2026-09-30 mac-check, server via ssh tunnel): pair (no Keychain dialog), re-pair reuses token, upload + replace, summary + search OK, outage → retry, revoke → halt → re-pair → resume, SIGTERM exit. 410 drop not exercised on the Mac (transcript wasn't deleted before the step; server + web delete re-verified live) → redo `--only queue`.
 - osx: `Package.resolved` created on the Mac, not yet in git (pins FluidAudio; should be committed).
-- Mac session 1 (roadmap 1–4) done 2026-09-30; capture/bench/transcribe results assumed OK (user decision, report not reviewed). **Next = remote access (8a) → daemon (8).** Summary/search tuning waits for real transcripts.
+- Mac session 1 (roadmap 1–4) done 2026-09-30; capture/bench/transcribe results assumed OK (user decision, report not reviewed). **Next = daemon (8)** (remote access 8a done: LAN-only). Summary/search tuning waits for real transcripts.
 - Everything else below = planned, not built.
 - Default port **4200** (4000/4100 taken on the dev box by other services).
 - Monorepo: `server/` (Node backend), `web/` (React frontend), `shared/` (TS wire types), `osx/` (headless Swift CLI).
@@ -62,7 +62,7 @@ The repo has a few components:
 7. **server: search** — v1 done (FTS5 keyword + date/attendee filters, see Server design → Search). Next v2: chunk+embed w/ `sqlite-vec`, hybrid merge, optional RAG answer — blocked on real transcripts (to judge retrieval) + an embedding model on the dev box. Pagination skipped: >50 hits → refine with filters.
 8. **osx: daemon (`pa run`)** — EventKit work calendars + meeting detection (pure logic done; left: EventKit + per-process mic-in-use + meeting-app wrappers, `pa calendars` to list names for `workCalendars`), auto capture → transcribe → upload queue (`pa run` = upload worker only so far; see osx Upload queue), raw-audio retention; `osx/install.sh` LaunchAgent; `os.Logger` + log file.
 9. **Speaker naming** — label speakers in web UI, per-user voice embeddings, match vs attendees; LLM name proposals never overwrite user labels.
-8a. **Remote access** — needed before `pa run`; plan in `docs/remote-access.md`. `server.host` bind done (see Config). Tailscale ruled out (not allowed on the work Mac). Login throttle + signup switch done (see Auth). Open: public exposure vs device-API-only public vs LAN-only nginx vhost (`pa.riuna.com`, wildcard cert, bind `172.17.0.1`, `client_max_body_size 25m`). Caddy rejected (:443 = existing nginx).
+8a. **Remote access** — **LAN-only, built** (user decision 2026-09-30: no Tailscale on the work Mac; no public exposure because Cloudflare would see plaintext transcripts; app-layer encryption rejected because the web UI would leak them anyway). `https://assistant.riuna.com` = `~/src/webserver/nginx/conf.d/assistant.conf` → app bound to `172.17.0.1`. Details in `docs/remote-access.md`. Left: user removes the Cloudflare Tunnel route; restart to apply the bind; re-pair the Mac to the https URL. Off-LAN the Mac's uploads wait in the queue.
 10. **Ops/polish** — per-transcript delete done (see Transcript delete); per-user export/delete (must also purge user from backups), device list/revoke UI polish. Backups done (see Server design → Backups).
 
 ## Commands
@@ -116,7 +116,7 @@ The repo has a few components:
 - **Config (settled):** `server/config.ts` `parseConfig` (pure, tested) validates + normalizes (usernames lowercased/trimmed, baseUrl trailing `/` stripped, empty apiKey → `null`); `loadConfig` = thin file wrapper. Unrouted `llm.tasks.X` = feature off, not an error. Task → unknown provider = startup error.
   - `llm.tasks.X` = route or list of routes → always normalized to non-empty `LlmRoute[]`; first = default, rest = user-selectable (summary). Duplicate route = error.
   - Route `contextTokens` (optional, integer ≥4096, else null = unknown) = model window, used only for summary chunking.
-  - `server.host` (default `127.0.0.1`) → `listen(port, host)`. IP literal only (hostname = ambiguous v4/v6 bind). Was all-interfaces before → plain HTTP on LAN; don't regress the default. `172.17.0.1` = nginx-in-Docker; wildcard logs a warning. Host/port need restart (reload warns). `localUrl` = connectable URL (logs + `health.e2e`). All modes verified live.
+  - `server.host` (default `127.0.0.1`) → `listen(port, host)`. IP literal only (hostname = ambiguous v4/v6 bind). Was all-interfaces before → plain HTTP on LAN; don't regress the default. `172.17.0.1` = nginx-in-Docker (current choice, LAN-only vhost); wildcard logs a warning. Host/port need restart (reload warns). `localUrl` = connectable URL (logs + `health.e2e`). All modes verified live.
 - **Static serving:** `resolveStaticPath` must stay `startsWith(root + sep)` (bare `startsWith(root)` lets `dist/web.prev` through); traversal → SPA fallback, never a file outside root.
 - **Toolchain versions:** TypeScript 7 (native `tsc`), Vite 8, React 19, Vitest 4, Node 25 on dev box.
 
