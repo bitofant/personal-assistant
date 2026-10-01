@@ -5,7 +5,8 @@ import type { Store } from "./db.js";
 import type { Devices } from "./devices.js";
 import { listInstructions } from "./instructions.js";
 import { getSummaryLlm } from "./settings.js";
-import { getSpeakerNames } from "./speakers.js";
+import { getAutoSpeakers, getSpeakerNames } from "./speakers.js";
+import { getSpeakerEmbeddings } from "./speakerMatch.js";
 import { getSummary } from "./summaries.js";
 import { deviceUploadStats, getTranscript, listTranscripts } from "./transcripts.js";
 
@@ -19,7 +20,20 @@ export function exportUser(store: Store, devices: Devices, user: User, now: numb
     const t = getTranscript(db, item.id, names);
     if (!t) return [];
     const { deviceId: _deviceId, deviceName, receivedAt, updatedAt, ...transcript } = t;
-    return [{ transcript, deviceName, receivedAt, updatedAt, speakerNames: getSpeakerNames(db, t.id), summary: getSummary(db, t.id) }];
+    const emb = getSpeakerEmbeddings(db, t.id);
+    const speakerEmbeddings = Object.fromEntries([...(emb?.vectors ?? [])].map(([l, v]) => [l, Array.from(v)]));
+    return [
+      {
+        transcript,
+        deviceName,
+        receivedAt,
+        updatedAt,
+        speakerNames: getSpeakerNames(db, t.id),
+        autoSpeakers: getAutoSpeakers(db, t.id),
+        speakerEmbeddings,
+        summary: getSummary(db, t.id),
+      },
+    ];
   });
   return {
     format: "personal-assistant-export/1",

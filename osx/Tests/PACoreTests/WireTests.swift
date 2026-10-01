@@ -25,6 +25,7 @@ func fixture(_ name: String) throws -> Data {
         let u = try JSONDecoder().decode(TranscriptUpload.self, from: fixture("transcript-upload.json"))
         #expect(u.segments.count == 3 && u.segments[2].speaker == nil)
         #expect(u.meeting?.attendees.count == 2 && u.meeting?.organizer?.name == "Alice Example")
+        #expect(u.meeting?.attendees[0].isSelf == true && u.meeting?.attendees[1].isSelf == nil)
         #expect(try JSONDecoder().decode(TranscriptUpload.self, from: JSONEncoder().encode(u)) == u)
     }
 

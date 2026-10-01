@@ -1,10 +1,11 @@
-import type { Person, SpeakerSuggestion, TranscriptUpload } from "../shared/api.js";
+import type { Person, SpeakerMatch, SpeakerSuggestion, TranscriptUpload } from "../shared/api.js";
 import { MIN_CONTEXT_TOKENS } from "./config.js";
 import type { Db, Store } from "./db.js";
 import type { JobHandler } from "./jobs.js";
 import { LlmError, type ChatMessage, type Llm } from "./llm.js";
 import { getSummaryLlm } from "./settings.js";
-import { applySpeakerNames, getSpeakerNames, MAX_SPEAKER_NAME, speakerLabels } from "./speakers.js";
+import { speakerMatches } from "./speakerMatch.js";
+import { applySpeakerNames, getSpeakerNames, isGenericLabel, MAX_SPEAKER_NAME, speakerLabels } from "./speakers.js";
 import { chunkSegments, FALLBACK_CONTEXT_TOKENS, formatSegments, inputBudgetChars } from "./summaries.js";
 
 // LLM proposals for diarization labels ("Speaker 2" → "Bob"). Suggestions only: stored apart from speaker_names and
@@ -13,10 +14,7 @@ import { chunkSegments, FALLBACK_CONTEXT_TOKENS, formatSegments, inputBudgetChar
 export const SUGGEST_SPEAKERS_JOB = "suggest-speakers";
 export const MAX_EVIDENCE = 300;
 
-/** Diarization-style labels (pa: "Speaker N"; others: "S1", "SPEAKER_00"). Others (mic = local user's name) are already names. */
-export function isGenericLabel(label: string): boolean {
-  return /^(speaker|spk|s)[\s_-]?\d+$/i.test(label.trim());
-}
+export { isGenericLabel };
 
 /** Labels worth asking about: generic and not named by the user. */
 export function labelsToSuggest(t: Pick<TranscriptUpload, "segments">, names: Record<string, string>): string[] {
@@ -25,12 +23,16 @@ export function labelsToSuggest(t: Pick<TranscriptUpload, "segments">, names: Re
 
 const person = (p: Person) => (p.name && p.email ? `${p.name} <${p.email}>` : (p.name ?? p.email ?? "?"));
 
+const hintLine = (label: string, h: SpeakerMatch) =>
+  `${JSON.stringify(label)}: ${h.reason === "voice" ? `voice resembles ${h.name} (similarity ${h.score?.toFixed(2) ?? "?"})` : `${h.name} is the only invitee not yet accounted for`}`;
+
 /**
  * `t` with user names already applied (context for the model). Transcript cut to `maxChars` from the start:
- * introductions + greetings happen early.
+ * introductions + greetings happen early. `hints` = voice/calendar matches (tie-breakers, not proof).
  */
-export function buildSuggestPrompt(t: TranscriptUpload, labels: readonly string[], maxChars: number): ChatMessage[] {
+export function buildSuggestPrompt(t: TranscriptUpload, labels: readonly string[], maxChars: number, hints: Record<string, SpeakerMatch> = {}): ChatMessage[] {
   const m = t.meeting;
+  const hintLines = labels.filter((l) => Object.hasOwn(hints, l)).map((l) => hintLine(l, hints[l]));
   const chunks = chunkSegments(t.segments, maxChars);
   const cut = chunks.length > 1 ? "\n[… transcript continues; only the start is shown]" : "";
   const people = m ? [m.organizer, ...m.attendees].filter((p): p is Person => p !== null).map(person) : [];
@@ -41,6 +43,7 @@ export function buildSuggestPrompt(t: TranscriptUpload, labels: readonly string[
         "You identify speakers in a machine-made meeting transcript. Generic labels like \"Speaker 2\" come from voice clustering and may be imperfect.",
         "For each label asked about, give the person's name only if the transcript clearly shows it: they introduce themselves, someone addresses them by name and they answer, or they're called on and respond.",
         "If a name matches an invitee, spell it as in the invitee list. Never guess from the invitee list alone. Skip labels you can't identify.",
+        "Automatic hints (voice similarity to earlier meetings, calendar) may be listed: use them to decide between candidates the transcript supports, never as the only evidence.",
         'Reply with only a JSON object, no prose: {"<label>": {"name": "<name>", "evidence": "<short quote from the transcript>"}}. Reply {} if none.',
       ].join("\n"),
     },
@@ -50,6 +53,7 @@ export function buildSuggestPrompt(t: TranscriptUpload, labels: readonly string[
         `Title: ${m?.title ?? "(none: unscheduled call)"}`,
         m ? `Invitees: ${people.length ? people.join(", ") : "(none listed)"}` : null,
         `Labels to identify: ${labels.map((l) => JSON.stringify(l)).join(", ")}`,
+        hintLines.length ? `Automatic hints (may be wrong):\n${hintLines.join("\n")}` : null,
         "",
         `Transcript:\n${(chunks[0] && formatSegments(chunks[0])) || "(empty)"}${cut}`,
       ]
@@ -147,9 +151,10 @@ export function suggestSpeakersHandler(deps: { store: Store; llm: Llm; now: () =
     if (!labels.length) return saveSpeakerSuggestions(db, id, {}, deps.now());
     const t = applySpeakerNames(raw, names);
     const route = getSummaryLlm(db);
+    const hints = speakerMatches(db, id);
     let ctx = deps.llm.contextTokens("summary", route) ?? FALLBACK_CONTEXT_TOKENS;
     for (;;) {
-      const prompt = buildSuggestPrompt(t, labels, inputBudgetChars(ctx, buildSuggestPrompt({ ...t, segments: [] }, labels, 1000)));
+      const prompt = buildSuggestPrompt(t, labels, inputBudgetChars(ctx, buildSuggestPrompt({ ...t, segments: [] }, labels, 1000, hints)), hints);
       try {
         const reply = await deps.llm.chat("summary", prompt, { temperature: 0, route, signal });
         const parsed = parseSuggestReply(reply.text, labels);

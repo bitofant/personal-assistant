@@ -1,11 +1,16 @@
-import type { TranscriptUpload } from "../shared/api.js";
+import type { SpeakerMatch, SpeakerMatchReason, TranscriptUpload } from "../shared/api.js";
 import type { Db } from "./db.js";
 import { HttpError, isRecord } from "./http.js";
 
-// User names for diarization labels ("Speaker 2" → "Bob"), per transcript. Raw segments never change; names are
-// applied where text is shown or sent to the LLM.
+// Names for diarization labels ("Speaker 2" → "Bob"), per transcript: user-given or auto (speakerMatch.ts, at upload).
+// Raw segments never change; names are applied where text is shown or sent to the LLM.
 
 export const MAX_SPEAKER_NAME = 100;
+
+/** Diarization-style labels (pa: "Speaker N"; others: "S1", "SPEAKER_00"). Others (mic = local user's name) are already names. */
+export function isGenericLabel(label: string): boolean {
+  return /^(speaker|spk|s)[\s_-]?\d+$/i.test(label.trim());
+}
 
 /** Distinct non-null speaker labels, in order of first appearance. */
 export function speakerLabels(t: Pick<TranscriptUpload, "segments">): string[] {
@@ -40,9 +45,18 @@ export function getSpeakerNames(db: Db, transcriptId: string): Record<string, st
   return Object.fromEntries(rows.map((r) => [r.label, r.name]));
 }
 
+/** Labels named automatically (not yet confirmed/edited by the user). */
+export function getAutoSpeakers(db: Db, transcriptId: string): Record<string, SpeakerMatch> {
+  const rows = db
+    .prepare("SELECT label, name, reason, score FROM speaker_names WHERE transcript_id = ? AND source = 'auto' ORDER BY label")
+    .all(transcriptId.toLowerCase()) as { label: string; name: string; reason: SpeakerMatchReason; score: number | null }[];
+  return Object.fromEntries(rows.map((r) => [r.label, { name: r.name, reason: r.reason, score: r.score }]));
+}
+
 /**
- * Applies changes; bumps transcripts.updated_at if any name changed → existing summary shows as stale (it used the
- * old names). Returns the full map, or null if the transcript doesn't exist.
+ * Applies changes as user names; bumps transcripts.updated_at if any name changed → existing summary shows as stale
+ * (it used the old names). Same name as an auto name = confirm: becomes a user name, no bump. Returns the full map,
+ * or null if the transcript doesn't exist.
  */
 export function setSpeakerNames(db: Db, transcriptId: string, changes: Map<string, string | null>, now: number): Record<string, string> | null {
   const id = transcriptId.toLowerCase();
@@ -50,13 +64,18 @@ export function setSpeakerNames(db: Db, transcriptId: string, changes: Map<strin
     if (!db.prepare("SELECT 1 FROM transcripts WHERE id = ?").get(id)) return null;
     const before = getSpeakerNames(db, id);
     const del = db.prepare("DELETE FROM speaker_names WHERE transcript_id = ? AND label = ?");
+    const auto = getAutoSpeakers(db, id);
     const put = db.prepare(
-      `INSERT INTO speaker_names (transcript_id, label, name, updated_at) VALUES (?, ?, ?, ?)
-       ON CONFLICT (transcript_id, label) DO UPDATE SET name = excluded.name, updated_at = excluded.updated_at`,
+      `INSERT INTO speaker_names (transcript_id, label, name, updated_at, source) VALUES (?, ?, ?, ?, 'user')
+       ON CONFLICT (transcript_id, label) DO UPDATE SET name = excluded.name, updated_at = excluded.updated_at,
+         source = 'user', reason = NULL, score = NULL`,
     );
     let changed = false;
     for (const [label, name] of changes) {
-      if ((before[label] ?? null) === name) continue;
+      if ((before[label] ?? null) === name) {
+        if (name !== null && Object.hasOwn(auto, label)) put.run(id, label, name, now);
+        continue;
+      }
       changed = true;
       if (name === null) del.run(id, label);
       else put.run(id, label, name, now);

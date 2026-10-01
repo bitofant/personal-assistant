@@ -50,8 +50,41 @@ export function parseTranscriptUpload(raw: unknown): TranscriptUpload {
   if (!asrModel) errors.push("asrModel required");
   if (r.diarizationModel != null && typeof r.diarizationModel !== "string") errors.push("diarizationModel must be a string or null");
 
+  const speakerEmbeddings = parseSpeakerEmbeddings(r.speakerEmbeddings, segments, errors);
+
   if (errors.length) throw new HttpError(400, `Invalid transcript:\n  - ${errors.slice(0, 20).join("\n  - ")}`);
-  return { id, startedAt: startedAt!, endedAt: endedAt!, meeting, segments, asrModel: asrModel!, diarizationModel: str(r.diarizationModel) };
+  const t: TranscriptUpload = { id, startedAt: startedAt!, endedAt: endedAt!, meeting, segments, asrModel: asrModel!, diarizationModel: str(r.diarizationModel) };
+  // Key only when present: `data` (= transcript without it) must stay byte-identical for old clients' retries.
+  if (speakerEmbeddings) t.speakerEmbeddings = speakerEmbeddings;
+  return t;
+}
+
+export const MAX_EMBEDDING_DIM = 4096;
+const MAX_EMBEDDED_SPEAKERS = 64;
+
+/**
+ * label → vector; all the same length (one model). Labels absent from the segments are dropped (a diarizer cluster
+ * that got no words can't be named anyway). null/{} → null.
+ */
+function parseSpeakerEmbeddings(v: unknown, segments: TranscriptSegment[], errors: string[]): Record<string, number[]> | null {
+  if (v == null) return null;
+  if (!isRecord(v)) return (errors.push("speakerEmbeddings must be an object (label → number[]) or null"), null);
+  const labels = new Set(segments.map((s) => s.speaker));
+  const out: Record<string, number[]> = {};
+  let dim: number | null = null;
+  const entries = Object.entries(v);
+  if (entries.length > MAX_EMBEDDED_SPEAKERS) return (errors.push(`speakerEmbeddings: at most ${MAX_EMBEDDED_SPEAKERS} speakers`), null);
+  for (const [label, vec] of entries) {
+    const at = `speakerEmbeddings[${JSON.stringify(label)}]`;
+    if (!Array.isArray(vec) || vec.length < 2 || vec.length > MAX_EMBEDDING_DIM || !vec.every((x) => typeof x === "number" && Number.isFinite(x))) {
+      errors.push(`${at} must be 2–${MAX_EMBEDDING_DIM} finite numbers`);
+      continue;
+    }
+    if (dim !== null && vec.length !== dim) { errors.push(`${at}: all vectors must have the same length`); continue; }
+    dim = vec.length;
+    if (labels.has(label)) out[label] = vec as number[];
+  }
+  return Object.keys(out).length ? out : null;
 }
 
 function parseMeeting(m: Record<string, unknown>, errors: string[]): MeetingMeta {
@@ -81,7 +114,10 @@ function parsePerson(p: unknown, at: string, errors: string[]): Person | null {
   if (!isRecord(p)) { errors.push(`${at} must be an object`); return null; }
   const name = str(p.name);
   const email = str(p.email)?.toLowerCase() ?? null;
-  return name || email ? { name, email } : null;
+  if (p.isSelf != null && typeof p.isSelf !== "boolean") errors.push(`${at}.isSelf must be a boolean`);
+  if (!name && !email) return null;
+  // Only when true: keeps `data` of uploads without the flag unchanged.
+  return p.isSelf === true ? { name, email, isSelf: true } : { name, email };
 }
 
 /** Trimmed non-empty string, else null (missing ≠ ""). */
@@ -117,7 +153,9 @@ export function upsertTranscript(
 ): TranscriptUploadResponse & { changed: boolean } {
   if (db.prepare("SELECT 1 FROM deleted_transcripts WHERE id = ?").get(t.id))
     throw new HttpError(410, "This transcript was deleted on the server; it won't be stored again.");
-  const data = JSON.stringify(t);
+  // Embeddings live in speaker_embeddings (speakerMatch.ts), not in `data`: never shipped to the web with the transcript.
+  const { speakerEmbeddings: _embeddings, ...content } = t;
+  const data = JSON.stringify(content);
   const prev = db.prepare("SELECT data FROM transcripts WHERE id = ?").get(t.id) as { data: string } | undefined;
   db.prepare(
     `INSERT INTO transcripts (id, device_id, started_at, ended_at, title, calendar_name, event_id, series_id,
@@ -220,7 +258,7 @@ export function deleteTranscript(db: Db, id: string, now: number): boolean {
 }
 
 // Summary + speaker names live elsewhere (summaries/speaker_names tables, app.db jobs); app.ts joins them.
-export function getTranscript(db: Db, id: string, deviceNames: Map<string, string>): Omit<TranscriptDetail, "summary" | "summaryJob" | "speakerNames"> | null {
+export function getTranscript(db: Db, id: string, deviceNames: Map<string, string>): Omit<TranscriptDetail, "summary" | "summaryJob" | "speakerNames" | "autoSpeakers"> | null {
   const r = db.prepare("SELECT * FROM transcripts WHERE id = ?").get(id.toLowerCase()) as Row | undefined;
   if (!r) return null;
   return {

@@ -44,7 +44,7 @@ import Testing
         let (me, people) = mapParticipants(ps)
         #expect(me == .tentative)
         #expect(people == [
-            Person(name: "Me", email: "me@corp.com"), Person(name: "Alice", email: "alice@corp.com"), Person(name: "Bob", email: nil),
+            Person(name: "Me", email: "me@corp.com", isSelf: true), Person(name: "Alice", email: "alice@corp.com"), Person(name: "Bob", email: nil),
         ])
         #expect(mapParticipants([]).selfStatus == nil)
     }

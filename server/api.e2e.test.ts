@@ -492,7 +492,7 @@ describe("API flow", () => {
     const before = t.updatedAt;
     const r = await put({ names: { [label]: "  Zed Zebra " } });
     expect(r.status).toBe(200);
-    expect((await r.json()) as SpeakerNamesResponse).toEqual({ speakerNames: { [label]: "Zed Zebra" } });
+    expect((await r.json()) as SpeakerNamesResponse).toEqual({ speakerNames: { [label]: "Zed Zebra" }, autoSpeakers: {} });
     const after = await get();
     expect(after.speakerNames).toEqual({ [label]: "Zed Zebra" });
     expect(after.segments.find((s) => s.speaker === label)).toBeTruthy(); // raw labels kept
@@ -541,7 +541,7 @@ describe("API flow", () => {
         users: ["alice"],
         llm: { providers: [{ id: "fake", baseUrl: `http://127.0.0.1:${(llm.address() as AddressInfo).port}/v1` }], tasks: { summary: { provider: "fake", model: "fake" } } },
       });
-      expect(await get()).toEqual({ suggestions: {}, job: null });
+      expect(await get()).toEqual({ suggestions: {}, job: null, matches: {} });
       expect((await fetch(base + path)).status).toBe(401);
       expect((await fetch(base + path, { method: "POST", headers: { cookie } })).status).toBe(415); // CSRF guard
       expect((await post(`/api/transcripts/0d0d0d0d-0000-4000-8000-000000000000/speakers/suggestions`, {}, { cookie })).status).toBe(404);
@@ -585,6 +585,56 @@ describe("API flow", () => {
     await new Promise((res) => setTimeout(res, 5));
     expect((await post("/api/device/transcripts", upload, bearer)).status).toBe(200);
     expect(Date.parse((await list()).find((d) => d.id === deviceId)!.lastUploadAt!)).toBeGreaterThan(Date.parse(before.lastUploadAt!));
+  });
+
+  it("auto speaker names: voice learns from user names, calendar elimination, confirm, export", async () => {
+    const detail = async (id: string) => (await (await fetch(`${base}/api/transcripts/${id}`, { headers: { cookie } })).json()) as TranscriptDetail;
+    const put = (id: string, names: Record<string, string | null>) => fetch(`${base}/api/transcripts/${id}/speakers`, { method: "PUT", ...json({ names }, { cookie }) });
+    const segs = (labels: string[]) => labels.map((speaker, i) => ({ start: i * 30, end: i * 30 + 29, speaker, text: `words ${i}` }));
+    const base0 = { startedAt: "2026-09-25T07:00:00Z", endedAt: "2026-09-25T08:00:00Z", meeting: null, asrModel: "asr", diarizationModel: "diar-x" };
+    const A = "a0a0a0a0-0000-4000-8000-000000000001";
+    const B = "a0a0a0a0-0000-4000-8000-000000000002";
+    const C = "a0a0a0a0-0000-4000-8000-000000000003";
+
+    // A: Speaker 1 has a voice; the user names it.
+    const a = { ...base0, id: A, segments: segs(["Me", "Speaker 1", "Speaker 2"]), speakerEmbeddings: { "Speaker 1": [1, 0, 0, 0], "Speaker 2": [0, 1, 0, 0] } };
+    expect((await post("/api/device/transcripts", a, bearer)).status).toBe(201);
+    expect((await detail(A)).autoSpeakers).toEqual({});
+    expect((await put(A, { "Speaker 1": "Bob" })).status).toBe(200);
+
+    // B: same voice under another label → auto-named at upload, before anything else reads the names.
+    const b = { ...base0, id: B, segments: segs(["Me", "Speaker 1", "Speaker 2"]), speakerEmbeddings: { "Speaker 1": [0, 0, 1, 0], "Speaker 2": [0.98, 0.05, 0, 0] } };
+    expect((await post("/api/device/transcripts", b, bearer)).status).toBe(201);
+    const db = await detail(B);
+    expect(db.speakerNames).toEqual({ "Speaker 2": "Bob" });
+    expect(db.autoSpeakers).toEqual({ "Speaker 2": { name: "Bob", reason: "voice", score: expect.closeTo(0.999, 2) } });
+    expect("speakerEmbeddings" in db).toBe(false); // vectors never shipped with the transcript
+    // Confirm = same name back → user name, no stale bump.
+    const r = (await (await put(B, { "Speaker 2": "Bob" })).json()) as SpeakerNamesResponse;
+    expect(r).toEqual({ speakerNames: { "Speaker 2": "Bob" }, autoSpeakers: {} });
+    expect((await detail(B)).updatedAt).toBe(db.updatedAt);
+
+    // C: 1on1 from the calendar; the user is marked isSelf → the remote speaker is the other invitee.
+    const meeting = {
+      calendarName: "Work", eventId: "ev-c", seriesId: null, title: "Carol / me", start: base0.startedAt, end: base0.endedAt,
+      organizer: { name: "Carol Danvers", email: "carol@x.com" },
+      attendees: [{ name: "Joran T", email: "me@x.com", isSelf: true }, { name: "Carol Danvers", email: "carol@x.com" }],
+    };
+    expect((await post("/api/device/transcripts", { ...base0, id: C, meeting, segments: segs(["Me", "Speaker 1"]) }, bearer)).status).toBe(201);
+    expect((await detail(C)).autoSpeakers).toEqual({ "Speaker 1": { name: "Carol Danvers", reason: "calendar", score: null } });
+    // User clears it → unnamed; offered again as a match (not re-applied).
+    await put(C, { "Speaker 1": null });
+    expect((await detail(C)).speakerNames).toEqual({});
+    const sugg = (await (await fetch(`${base}/api/transcripts/${C}/speakers/suggestions`, { headers: { cookie } })).json()) as SpeakerSuggestionsResponse;
+    expect(sugg.matches).toEqual({ "Speaker 1": { name: "Carol Danvers", reason: "calendar", score: null } });
+
+    const ex = (await (await fetch(`${base}/api/export`, { headers: { cookie } })).json()) as UserExport;
+    const xb = ex.transcripts.find((x) => x.transcript.id === B)!;
+    expect(xb.speakerEmbeddings["Speaker 1"]).toEqual([0, 0, 1, 0]); // stored unit-length
+    expect(xb.autoSpeakers).toEqual({});
+    expect(ex.transcripts.find((x) => x.transcript.id === C)!.transcript.meeting!.attendees[0].isSelf).toBe(true);
+
+    for (const id of [A, B, C]) expect((await fetch(`${base}/api/transcripts/${id}`, { method: "DELETE", headers: { cookie } })).status).toBe(204);
   });
 
   it("disabling the user in config cuts off both web session and device", async () => {

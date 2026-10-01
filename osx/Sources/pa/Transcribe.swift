@@ -42,7 +42,7 @@ func transcribe(_ o: TranscribeOptions) async throws {
     print(String(format: "audio %.1fs, transcribe+diarize %.1fs (%.0fx realtime), %d segments, speakers: %@",
                  duration, elapsed, elapsed > 0 ? duration / elapsed : 0, u.segments.count,
                  speakers.isEmpty ? "—" : speakers.joined(separator: ", ")))
-    print("asr \(u.asrModel), diarization \(u.diarizationModel ?? "—")")
+    print("asr \(u.asrModel), diarization \(u.diarizationModel ?? "—"), voice embeddings for \(u.speakerEmbeddings?.count ?? 0) speaker(s)")
     print("→ \(out.path)")
     if o.upload { try await enqueueAndTryUpload(u) }
 }

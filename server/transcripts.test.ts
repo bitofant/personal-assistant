@@ -42,6 +42,31 @@ describe("parseTranscriptUpload", () => {
     expect(parseTranscriptUpload(f).meeting?.attendees).toHaveLength(2);
   });
 
+  it("isSelf kept only when true (data of uploads without it unchanged); non-boolean rejected", () => {
+    const f = fixture();
+    f.meeting.attendees[0].isSelf = true;
+    f.meeting.attendees[1].isSelf = false;
+    const t = parseTranscriptUpload(f);
+    expect(t.meeting?.attendees).toEqual([
+      { name: "Alice Example", email: "alice@example.com", isSelf: true },
+      { name: "Bob Builder", email: "bob@example.com" },
+    ]);
+    f.meeting.organizer.isSelf = "yes";
+    expect(() => parseTranscriptUpload(f)).toThrow(/organizer.isSelf must be a boolean/);
+  });
+
+  it("speakerEmbeddings: validated, labels not in segments dropped, empty → absent", () => {
+    const ok = parseTranscriptUpload({ ...fixture(), speakerEmbeddings: { "Speaker 2": [0.1, 0.2, 0.3], "Speaker 9": [1, 2, 3] } });
+    expect(ok.speakerEmbeddings).toEqual({ "Speaker 2": [0.1, 0.2, 0.3] });
+    expect("speakerEmbeddings" in parseTranscriptUpload({ ...fixture(), speakerEmbeddings: null })).toBe(false);
+    expect("speakerEmbeddings" in parseTranscriptUpload({ ...fixture(), speakerEmbeddings: { "Speaker 9": [1, 2] } })).toBe(false);
+    const bad = (v: unknown) => () => parseTranscriptUpload({ ...fixture(), speakerEmbeddings: v });
+    expect(bad([1, 2])).toThrow(/speakerEmbeddings must be an object/);
+    expect(bad({ "Speaker 2": [1] })).toThrow(/2–4096 finite numbers/);
+    expect(bad({ "Speaker 2": [1, "2"] })).toThrow(/finite numbers/);
+    expect(bad({ "Speaker 2": [1, 2], "Alice Example": [1, 2, 3] })).toThrow(/same length/);
+  });
+
   it("rejects bad ids, zoneless/invalid times, inverted ranges, bad segments", () => {
     const f = fixture();
     f.id = "not-a-uuid";
@@ -68,6 +93,15 @@ describe("transcript storage", () => {
     migrate(d, USER_MIGRATIONS);
     return d;
   };
+
+  it("embeddings stay out of `data`: adding them to a retry isn't a content change", () => {
+    const d = db();
+    const t = parseTranscriptUpload(fixture());
+    upsertTranscript(d, "dev1", t, FIXTURE_RAW, 1000);
+    const withEmb = parseTranscriptUpload({ ...fixture(), speakerEmbeddings: { "Speaker 2": [1, 2] } });
+    expect(upsertTranscript(d, "dev1", withEmb, "{}", 2000).changed).toBe(false);
+    expect(JSON.stringify(getTranscript(d, t.id, new Map()))).not.toContain("speakerEmbeddings");
+  });
 
   it("upsert is idempotent on id; keeps raw verbatim and received_at", () => {
     const d = db();

@@ -103,6 +103,8 @@ export interface Person {
   name: string | null;
   /** Normalized lowercase by the server. */
   email: string | null;
+  /** true = the account owner (calendar "current user"); omitted otherwise. Lets speaker matching skip yourself. */
+  isSelf?: boolean;
 }
 
 /** Calendar event the recording belongs to; null on the upload = ad-hoc call. */
@@ -138,6 +140,11 @@ export interface TranscriptUpload {
   segments: TranscriptSegment[];
   asrModel: string;
   diarizationModel: string | null;
+  /**
+   * Voice embedding per diarized speaker label (cluster centroid in `diarizationModel`'s space; only comparable within
+   * the same model). Omitted/null = none. Upload only: stored apart from the transcript, never in TranscriptDetail.
+   */
+  speakerEmbeddings?: Record<string, number[]> | null;
 }
 
 /** POST /api/device/transcripts → 201 created / 200 replaced. */
@@ -164,7 +171,7 @@ export interface TranscriptListResponse {
 }
 
 /** GET /api/transcripts/:id (web) */
-export interface TranscriptDetail extends TranscriptUpload {
+export interface TranscriptDetail extends Omit<TranscriptUpload, "speakerEmbeddings"> {
   deviceId: string;
   deviceName: string | null;
   receivedAt: string;
@@ -173,13 +180,27 @@ export interface TranscriptDetail extends TranscriptUpload {
   summary: TranscriptSummary | null;
   /** null = never queued (e.g. uploaded before summaries existed). */
   summaryJob: JobState | null;
-  /** User-given names for segment `speaker` labels (label → name). Segments keep the raw label; render the name. */
+  /** Names for segment `speaker` labels (label → name), user-given or automatic. Segments keep the raw label; render the name. */
   speakerNames: Record<string, string>;
+  /** Labels in `speakerNames` the server named itself at upload (not confirmed by the user). */
+  autoSpeakers: Record<string, SpeakerMatch>;
+}
+
+/** voice = sounds like a speaker the user named in another transcript; calendar = the only invitee not accounted for. */
+export type SpeakerMatchReason = "voice" | "calendar";
+
+/** Server-side speaker identification (no LLM). */
+export interface SpeakerMatch {
+  name: string;
+  reason: SpeakerMatchReason;
+  /** Voice: cosine similarity (−1…1) to the best stored sample of that person; calendar: null. */
+  score: number | null;
 }
 
 /**
  * PUT /api/transcripts/:id/speakers (web) → 200 SpeakerNamesResponse. Partial: only the labels listed change;
  * null/blank name = back to the label. Labels must occur in the transcript. Marks the summary stale.
+ * Every name sent becomes user-given; sending an automatic name unchanged = confirm it (no staleness).
  */
 export interface SpeakerNamesRequest {
   names: Record<string, string | null>;
@@ -187,6 +208,7 @@ export interface SpeakerNamesRequest {
 
 export interface SpeakerNamesResponse {
   speakerNames: Record<string, string>;
+  autoSpeakers: Record<string, SpeakerMatch>;
 }
 
 /** LLM-proposed name for a speaker label. Never applied by the server: the user accepts it via PUT …/speakers. */
@@ -205,6 +227,8 @@ export interface SpeakerSuggestionsResponse {
   suggestions: Record<string, SpeakerSuggestion>;
   /** null = never requested. */
   job: JobState | null;
+  /** label → voice/calendar match for unnamed labels, computed now (no job). */
+  matches: Record<string, SpeakerMatch>;
 }
 
 // ---- Search ----
@@ -378,6 +402,9 @@ export interface ExportedTranscript {
   receivedAt: string;
   updatedAt: string;
   speakerNames: Record<string, string>;
+  autoSpeakers: Record<string, SpeakerMatch>;
+  /** Voice embeddings as uploaded (label → vector, `transcript.diarizationModel` space). */
+  speakerEmbeddings: Record<string, number[]>;
   summary: TranscriptSummary | null;
 }
 

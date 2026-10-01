@@ -1,4 +1,4 @@
-import type { JobState, SpeakerSuggestion, TranscriptDetail } from "../shared/api.js";
+import type { JobState, SpeakerMatch, SpeakerSuggestion, TranscriptDetail } from "../shared/api.js";
 import { formatDateTime } from "../shared/format.js";
 import { POLL_ACTIVE_MS, POLL_WAITING_MS, type SummaryTone } from "./summaryState.js";
 
@@ -38,6 +38,18 @@ export function suggestionFor(label: string, names: Record<string, string>, valu
   if (Object.hasOwn(names, label) || !Object.hasOwn(suggestions, label)) return null;
   const s = suggestions[label];
   return s.name === value.trim() ? null : s;
+}
+
+/** Why the server picked/offers a name: "voice match 0.82" / "only invitee left". */
+export function matchReason(m: SpeakerMatch): string {
+  return m.reason === "voice" ? `voice match ${m.score === null ? "—" : m.score.toFixed(2)}` : "only invitee left";
+}
+
+/** Voice/calendar match worth offering: label unnamed, not already typed in, and not the same name as the LLM suggestion shown. */
+export function matchFor(label: string, names: Record<string, string>, value: string, matches: Record<string, SpeakerMatch>, llm: SpeakerSuggestion | null): SpeakerMatch | null {
+  if (Object.hasOwn(names, label) || !Object.hasOwn(matches, label)) return null;
+  const m = matches[label];
+  return m.name === value.trim() || m.name === llm?.name ? null : m;
 }
 
 export interface SuggestJobView {
