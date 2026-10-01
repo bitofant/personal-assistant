@@ -29,7 +29,8 @@ import { deleteInstruction, listInstructions, listSeries, parseInstructionTarget
 import { createLlm, routeChoices, type Llm } from "./llm.js";
 import { parseSearchRequest, searchTranscripts } from "./search.js";
 import { effectiveChoice, getSummaryLlm, parseRouteChoice, setSummaryLlm } from "./settings.js";
-import { getSpeakerNames, parseSpeakerNames, setSpeakerNames, speakerLabels } from "./speakers.js";
+import { getAutoSpeakers, getSpeakerNames, parseSpeakerNames, setSpeakerNames, speakerLabels } from "./speakers.js";
+import { ingestSpeakers, speakerMatches } from "./speakerMatch.js";
 import { clearSpeakerSuggestions, getSpeakerSuggestions, SUGGEST_SPEAKERS_JOB, suggestSpeakersHandler } from "./speakerSuggestions.js";
 import { getSummary, SUMMARIZE_JOB, summarizeHandler, type SummarizePayload } from "./summaries.js";
 import { bearerToken, HttpError, isRecord, readJson, sendError, sendJson, sendNoContent } from "./http.js";
@@ -153,10 +154,14 @@ export function createApp(opts: AppOptions): App {
   route("POST", "/api/device/transcripts", async ({ req, res }) => {
     const device = devices.requireActive(req);
     const { raw, value } = await readJson(req, MAX_TRANSCRIPT_BYTES);
-    const { changed, ...result } = upsertTranscript(store.user(device.userId), device.id, parseTranscriptUpload(value), raw, now());
+    const upload = parseTranscriptUpload(value);
+    const db = store.user(device.userId);
+    const { changed, ...result } = upsertTranscript(db, device.id, upload, raw, now());
     devices.recordUpload(device.id);
+    // Before the summary is queued: the job then reads auto names too.
+    ingestSpeakers(db, upload, changed, now());
     // New content may renumber diarization labels → old suggestions could point at the wrong voice.
-    if (changed) clearSpeakerSuggestions(store.user(device.userId), result.id);
+    if (changed) clearSpeakerSuggestions(db, result.id);
     // Unchanged re-upload: keep existing summary/job; but backfill if it was never queued.
     if (changed || !jobs.find(device.userId, SUMMARIZE_JOB, result.id)) enqueueSummary(device.userId, result.id);
     sendJson(res, result satisfies TranscriptUploadResponse, result.created ? 201 : 200);
@@ -173,7 +178,7 @@ export function createApp(opts: AppOptions): App {
     const db = store.user(user.id);
     const t = getTranscript(db, params[0], devices.names(user.id));
     if (!t) throw new HttpError(404, "No such transcript.");
-    sendJson(res, { ...t, ...summaryOf(user.id, t.id), speakerNames: getSpeakerNames(db, t.id) } satisfies TranscriptDetail);
+    sendJson(res, { ...t, ...summaryOf(user.id, t.id), speakerNames: getSpeakerNames(db, t.id), autoSpeakers: getAutoSpeakers(db, t.id) } satisfies TranscriptDetail);
   });
   route("PUT", "/api/transcripts/:id/speakers", async ({ req, res, params }) => {
     const user = auth.requireUser(req);
@@ -183,11 +188,12 @@ export function createApp(opts: AppOptions): App {
     if (!t) throw new HttpError(404, "No such transcript.");
     const speakerNames = setSpeakerNames(db, t.id, parseSpeakerNames(value, speakerLabels(t)), now());
     if (!speakerNames) throw new HttpError(404, "No such transcript.");
-    sendJson(res, { speakerNames } satisfies SpeakerNamesResponse);
+    sendJson(res, { speakerNames, autoSpeakers: getAutoSpeakers(db, t.id) } satisfies SpeakerNamesResponse);
   });
   const suggestionsOf = (userId: number, id: string): SpeakerSuggestionsResponse => {
     const job = jobs.find(userId, SUGGEST_SPEAKERS_JOB, id);
-    return { suggestions: getSpeakerSuggestions(store.user(userId), id), job: job && jobState(job) };
+    const db = store.user(userId);
+    return { suggestions: getSpeakerSuggestions(db, id), job: job && jobState(job), matches: speakerMatches(db, id) };
   };
   route("GET", "/api/transcripts/:id/speakers/suggestions", ({ req, res, params }) => {
     const user = auth.requireUser(req);

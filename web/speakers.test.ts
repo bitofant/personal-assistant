@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { displaySpeaker, nameSuggestions, speakerEdits, speakerLabels, suggestionFor, suggestJobView } from "./speakers.js";
+import { displaySpeaker, nameSuggestions, speakerEdits, speakerLabels, suggestionFor, suggestJobView, matchFor, matchReason } from "./speakers.js";
 
 const seg = (speaker: string | null) => ({ start: 0, end: 1, speaker, text: "x" });
 
@@ -51,5 +51,23 @@ describe("speaker suggestions (web)", () => {
     expect(suggestJobView(job("failed", "boom"), 0)).toMatchObject({ tone: "error", inProgress: false, message: expect.stringContaining("boom") });
     expect(suggestJobView(job("done"), 0).message).toMatch(/No names found/);
     expect(suggestJobView(job("done"), 2).message).toBeNull();
+  });
+});
+
+describe("voice/calendar matches", () => {
+  const voice = { name: "Bob", reason: "voice" as const, score: 0.8234 };
+  const cal = { name: "Carol", reason: "calendar" as const, score: null };
+  it("reason text", () => {
+    expect(matchReason(voice)).toBe("voice match 0.82");
+    expect(matchReason(cal)).toBe("only invitee left");
+  });
+  it("offered only for unnamed labels, not when typed in or same as the LLM suggestion", () => {
+    const matches = { "Speaker 1": voice, "Speaker 2": cal };
+    expect(matchFor("Speaker 1", {}, "", matches, null)).toEqual(voice);
+    expect(matchFor("Speaker 1", { "Speaker 1": "Bob" }, "Bob", matches, null)).toBeNull();
+    expect(matchFor("Speaker 1", {}, " Bob ", matches, null)).toBeNull();
+    expect(matchFor("Speaker 1", {}, "", matches, { name: "Bob", evidence: null })).toBeNull();
+    expect(matchFor("Speaker 2", {}, "", matches, { name: "Dan", evidence: null })).toEqual(cal);
+    expect(matchFor("constructor", {}, "", matches, null)).toBeNull();
   });
 });

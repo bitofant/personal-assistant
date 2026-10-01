@@ -35,10 +35,22 @@ public protocol Transcriber: Sendable {
     func words(in audio: URL) async throws -> [TimedWord]
 }
 
+/// Diarizer output: who spoke when + one voice embedding per engine speaker id (may be empty).
+public struct Diarization: Equatable, Sendable {
+    public var turns: [SpeakerTurn]
+    /// Engine id → embedding (FluidAudio: cluster centroid, 256-d). Server compares them with earlier named speakers.
+    public var embeddings: [String: [Float]]
+
+    public init(turns: [SpeakerTurn], embeddings: [String: [Float]] = [:]) {
+        self.turns = turns
+        self.embeddings = embeddings
+    }
+}
+
 public protocol SpeakerDiarizer: Sendable {
     /// → `TranscriptUpload.diarizationModel`.
     var model: String { get }
-    func turns(in audio: URL) async throws -> [SpeakerTurn]
+    func diarize(_ audio: URL) async throws -> Diarization
 }
 
 /// Speaker per word: turn with most overlap; else nearest turn within `snap`s (ASR and diarizer edges drift a
@@ -64,14 +76,22 @@ public func assignSpeakers(_ words: [TimedWord], turns: [SpeakerTurn], snap: Dou
 /// Engine ids → "Speaker 1", "Speaker 2", … by first appearance: stable per transcript, never mistaken for a
 /// real name (naming happens later, server/web side).
 public func relabelSpeakers(_ speakers: [String?]) -> [String?] {
+    let names = speakerLabelMap(speakers)
+    return speakers.map { $0.flatMap { names[$0] } }
+}
+
+/// Engine id → "Speaker N" (first appearance), only for ids that got words; same numbering as `relabelSpeakers`.
+public func speakerLabelMap(_ speakers: [String?]) -> [String: String] {
     var names: [String: String] = [:]
-    return speakers.map { s in
-        guard let s else { return nil }
-        if let n = names[s] { return n }
-        let n = "Speaker \(names.count + 1)"
-        names[s] = n
-        return n
-    }
+    for s in speakers.compactMap({ $0 }) where names[s] == nil { names[s] = "Speaker \(names.count + 1)" }
+    return names
+}
+
+/// Embeddings re-keyed by segment label; ids without words dropped (nothing to name). Empty → nil (omitted).
+public func labelEmbeddings(_ embeddings: [String: [Float]], labels: [String: String]) -> [String: [Float]]? {
+    var out: [String: [Float]] = [:]
+    for (id, v) in embeddings { if let l = labels[id], !v.isEmpty { out[l] = v } }
+    return out.isEmpty ? nil : out
 }
 
 public struct SegmentRules: Equatable, Sendable {
@@ -136,6 +156,8 @@ public struct Transcription: Equatable, Sendable {
     public var diarizationModel: String?
     /// Non-fatal problems (e.g. diarization failed); shown to the user, transcript still produced.
     public var warnings: [String]
+    /// Segment label → voice embedding (system stream only; mic = local user, not diarized).
+    public var speakerEmbeddings: [String: [Float]]? = nil
 }
 
 /// Mic = the local user (headphones assumed → no bleed), labelled `micSpeaker`; system = everyone else,
@@ -152,13 +174,17 @@ public func transcribeRecording(
     }
     var sysSegs: [TranscriptSegment] = []
     var diarizationModel: String?
+    var speakerEmbeddings: [String: [Float]]?
     if let system {
         let words = try await transcriber.words(in: system)
         var speakers = [String?](repeating: nil, count: words.count)
         if let diarizer, !words.isEmpty {
             do {
-                let turns = try await diarizer.turns(in: system)
-                speakers = relabelSpeakers(assignSpeakers(words, turns: turns))
+                let d = try await diarizer.diarize(system)
+                let engineIds = assignSpeakers(words, turns: d.turns)
+                let labels = speakerLabelMap(engineIds)
+                speakers = engineIds.map { $0.flatMap { labels[$0] } }
+                speakerEmbeddings = labelEmbeddings(d.embeddings, labels: labels)
                 diarizationModel = diarizer.model
             } catch {
                 warnings.append("diarization failed, speakers left unknown: \(error)")
@@ -168,7 +194,7 @@ public func transcribeRecording(
     }
     return Transcription(
         segments: mergeStreams(micSegs, sysSegs), asrModel: transcriber.model,
-        diarizationModel: diarizationModel, warnings: warnings)
+        diarizationModel: diarizationModel, warnings: warnings, speakerEmbeddings: speakerEmbeddings)
 }
 
 /// One `pa test-capture` recording: `pa-<stamp>-{system,mic}.wav` (either may be missing).
@@ -255,5 +281,6 @@ public func makeTranscriptUpload(
     TranscriptUpload(
         id: id.uuidString.lowercased(), startedAt: isoTimestamp(startedAt),
         endedAt: isoTimestamp(startedAt.addingTimeInterval(duration)), meeting: meeting,
-        segments: t.segments, asrModel: t.asrModel, diarizationModel: t.diarizationModel)
+        segments: t.segments, asrModel: t.asrModel, diarizationModel: t.diarizationModel,
+        speakerEmbeddings: t.speakerEmbeddings)
 }

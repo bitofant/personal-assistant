@@ -11,7 +11,7 @@
     "end": "2026-09-24T07:30:00Z",
     "organizer": { "name": "Alice Example", "email": "Alice@Example.com" },
     "attendees": [
-      { "name": "Alice Example", "email": "alice@example.com" },
+      { "name": "Alice Example", "email": "alice@example.com", "isSelf": true },
       { "name": "Bob Builder", "email": " BOB@example.com " }
     ]
   },

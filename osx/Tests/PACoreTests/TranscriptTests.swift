@@ -103,9 +103,10 @@ struct FakeTranscriber: Transcriber {
 struct FakeDiarizer: SpeakerDiarizer {
     let model = "fake-diar"
     let turns: [SpeakerTurn]?
-    func turns(in audio: URL) async throws -> [SpeakerTurn] {
+    var embeddings: [String: [Float]] = [:]
+    func diarize(_ audio: URL) async throws -> Diarization {
         guard let turns else { throw FakeError.boom }
-        return turns
+        return Diarization(turns: turns, embeddings: embeddings)
     }
 }
 
@@ -131,6 +132,20 @@ enum FakeError: Error { case missing, boom }
             seg(5, 5.4, "Me", "Sure."),
         ])
         #expect(t.asrModel == "fake-asr" && t.diarizationModel == "fake-diar" && t.warnings.isEmpty)
+        #expect(t.speakerEmbeddings == nil)
+    }
+
+    @Test func embeddingsFollowSegmentLabels() async throws {
+        // S2 speaks first → "Speaker 1"; S3 got no words → dropped; empty vector dropped.
+        let d = FakeDiarizer(
+            turns: [SpeakerTurn("S2", start: 0.9, end: 2), SpeakerTurn("S1", start: 2.4, end: 3.2)],
+            embeddings: ["S1": [0.1, 0.2], "S2": [0.3, 0.4], "S3": [0.5, 0.6]])
+        let t = try await transcribeRecording(mic: mic, system: sys, transcriber: asr, diarizer: d, micSpeaker: "Me")
+        #expect(t.speakerEmbeddings == ["Speaker 1": [0.3, 0.4], "Speaker 2": [0.1, 0.2]])
+        #expect(labelEmbeddings(["S1": []], labels: ["S1": "Speaker 1"]) == nil)
+        let failed = try await transcribeRecording(
+            mic: nil, system: sys, transcriber: asr, diarizer: FakeDiarizer(turns: nil), micSpeaker: "Me")
+        #expect(failed.speakerEmbeddings == nil)
     }
 
     @Test func diarizationFailureFailsSafe() async throws {
@@ -244,12 +259,16 @@ private func spread(_ text: String, _ start: Double, _ end: Double) -> [TimedWor
                 + spread("Kan iemand de notulen bijhouden?", 14.2, 19.5),
         ])
         // S2 speaks first → "Speaker 1"; last line is >0.5s from any turn → unknown speaker (key omitted).
-        let d = FakeDiarizer(turns: [SpeakerTurn("S2", start: 3.7, end: 6.0), SpeakerTurn("S1", start: 6.0, end: 12.7)])
+        let d = FakeDiarizer(
+            turns: [SpeakerTurn("S2", start: 3.7, end: 6.0), SpeakerTurn("S1", start: 6.0, end: 12.7)],
+            embeddings: ["S1": [0, 0.6, 0.8, 0], "S2": [0.5, 0.5, 0.5, 0.5]])
         let t = try await transcribeRecording(
             mic: URL(fileURLWithPath: "/r/mic.wav"), system: URL(fileURLWithPath: "/r/system.wav"),
             transcriber: asr, diarizer: d, micSpeaker: "Alice Example")
         #expect(t.warnings.isEmpty)
-        let t2 = Transcription(segments: t.segments, asrModel: "parakeet-tdt-0.6b-v3", diarizationModel: "fluidaudio-offline-vbx-0.17.4", warnings: [])
+        let t2 = Transcription(
+            segments: t.segments, asrModel: "parakeet-tdt-0.6b-v3", diarizationModel: "fluidaudio-offline-vbx-0.17.4", warnings: [],
+            speakerEmbeddings: t.speakerEmbeddings)
         let start = try #require(parseCaptureStamp("20260924-090003", timeZone: TimeZone(identifier: "Europe/Brussels")!))
         let u = makeTranscriptUpload(
             id: UUID(uuidString: "3F0E8A52-6C1D-4B8E-9D57-2A4C1E7B9F10")!, startedAt: start, duration: 120, meeting: nil, transcription: t2)

@@ -3,6 +3,10 @@
   "diarizationModel": "fluidaudio-offline-vbx-0.17.4",
   "endedAt": "2026-09-24T07:02:03Z",
   "id": "3f0e8a52-6c1d-4b8e-9d57-2a4c1e7b9f10",
+  "speakerEmbeddings": {
+    "Speaker 1": [0.5, 0.5, 0.5, 0.5],
+    "Speaker 2": [0, 0.6, 0.8, 0]
+  },
   "segments": [
     { "end": 3.2, "speaker": "Alice Example", "start": 0.4, "text": "Morning! Can everyone hear me?" },
     { "end": 5.9, "speaker": "Speaker 1", "start": 3.8, "text": "Yes, loud and clear." },

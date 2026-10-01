@@ -22,7 +22,7 @@ import { emptySearch, parseSearchHash, parseTranscriptHash, transcriptHash } fro
 import { Account } from "./Account.js";
 import { Search, SearchBox } from "./Search.js";
 import { deviceActivityLine, REVOKE_HELP, revokeConfirmText } from "./devices.js";
-import { displaySpeaker, nameSuggestions, speakerEdits, speakerLabels, suggestionFor, suggestJobView } from "./speakers.js";
+import { displaySpeaker, matchFor, matchReason, nameSuggestions, speakerEdits, speakerLabels, suggestionFor, suggestJobView } from "./speakers.js";
 import { SummarySettings } from "./Settings.js";
 import { summaryStatusView, type SummaryTone } from "./summaryState.js";
 import { ErrorLine, routeKey, routeLabel } from "./ui.js";
@@ -268,8 +268,9 @@ function Transcript({ id, seg }: { id: string; seg: number | null }) {
 }
 
 /**
- * Name diarization labels; attendees offered as suggestions, plus LLM proposals on request ("Use" only fills the
- * input: nothing is saved until the user saves). Saving re-labels transcript + search, marks the summary stale.
+ * Name diarization labels; attendees offered as suggestions, voice/calendar matches, plus LLM proposals on request
+ * ("Use" only fills the input: nothing is saved until the user saves). Auto names (set at upload) can be confirmed
+ * (→ user name, used as a voiceprint) or edited. Saving re-labels transcript + search, marks the summary stale.
  */
 function SpeakerNames({ t, onSaved }: { t: TranscriptDetail; onSaved: () => void }) {
   const labels = useMemo(() => speakerLabels(t), [t]);
@@ -278,7 +279,8 @@ function SpeakerNames({ t, onSaved }: { t: TranscriptDetail; onSaved: () => void
   const [error, setError] = useState<string | null>(null);
   const [sugg, setSugg] = useState<SpeakerSuggestionsResponse | null>(null);
   const suggPath = `/transcripts/${encodeURIComponent(t.id)}/speakers/suggestions`;
-  const suggCount = sugg ? Object.keys(sugg.suggestions).length : 0;
+  const suggCount = sugg ? new Set([...Object.keys(sugg.suggestions), ...Object.keys(sugg.matches)]).size : 0;
+  const autoCount = Object.keys(t.autoSpeakers).length;
   const suggView = suggestJobView(sugg?.job ?? null, suggCount);
   // Reload on t change too: saving a name hides that label's suggestion server-side.
   useEffect(() => {
@@ -301,12 +303,12 @@ function SpeakerNames({ t, onSaved }: { t: TranscriptDetail; onSaved: () => void
   const valueOf = (l: string) => drafts[l] ?? (Object.hasOwn(t.speakerNames, l) ? t.speakerNames[l] : "");
   const edits = speakerEdits(t.speakerNames, Object.fromEntries(labels.map((l) => [l, valueOf(l)])));
   const listId = `speaker-suggestions-${t.id}`;
-  const save = async (e: FormEvent) => {
-    e.preventDefault();
+  const putNames = async (names: Record<string, string | null>) => {
     setBusy(true);
     try {
-      await api<SpeakerNamesResponse>(`/transcripts/${encodeURIComponent(t.id)}/speakers`, { method: "PUT", body: { names: edits } });
-      setDrafts({});
+      await api<SpeakerNamesResponse>(`/transcripts/${encodeURIComponent(t.id)}/speakers`, { method: "PUT", body: { names } });
+      // Only the sent labels: confirming one auto name keeps other unsaved edits.
+      setDrafts((d) => Object.fromEntries(Object.entries(d).filter(([k]) => !Object.hasOwn(names, k))));
       setError(null);
       onSaved();
     } catch (err) {
@@ -315,12 +317,18 @@ function SpeakerNames({ t, onSaved }: { t: TranscriptDetail; onSaved: () => void
       setBusy(false);
     }
   };
+  const save = (e: FormEvent) => {
+    e.preventDefault();
+    void putNames(edits);
+  };
   return (
     <details className="speakers">
       <summary>
-        Speakers ({labels.length}){suggCount > 0 && <span className="badge">{suggCount} suggested</span>}
+        Speakers ({labels.length})
+        {autoCount > 0 && <span className="badge">{autoCount} auto-named</span>}
+        {suggCount > 0 && <span className="badge">{suggCount} suggested</span>}
       </summary>
-      <form onSubmit={(e) => void save(e)}>
+      <form onSubmit={save}>
         <datalist id={listId}>
           {nameSuggestions(t).map((n) => (
             <option key={n} value={n} />
@@ -328,12 +336,33 @@ function SpeakerNames({ t, onSaved }: { t: TranscriptDetail; onSaved: () => void
         </datalist>
         {labels.map((l) => {
           const s = sugg && suggestionFor(l, t.speakerNames, valueOf(l), sugg.suggestions);
+          const m = sugg && matchFor(l, t.speakerNames, valueOf(l), sugg.matches, s);
+          const auto = Object.hasOwn(t.autoSpeakers, l) ? t.autoSpeakers[l] : null;
           return (
             <div key={l} className="speaker-row">
               <label className="row">
                 <span className="speaker-label">{l}</span>
                 <input className="grow" list={listId} placeholder={l} maxLength={100} value={valueOf(l)} onChange={(e) => setDrafts({ ...drafts, [l]: e.target.value })} />
               </label>
+              {auto && (
+                <p className="speaker-suggestion">
+                  <button type="button" disabled={busy || Object.hasOwn(drafts, l)} onClick={() => void putNames({ [l]: auto.name })} title="Keep this name; it then also helps recognize this voice in other meetings">
+                    Confirm
+                  </button>
+                  <span className="muted">Named automatically ({matchReason(auto)}). Confirm, or type the right name.</span>
+                </p>
+              )}
+              {m && (
+                <p className="speaker-suggestion">
+                  <button type="button" onClick={() => setDrafts({ ...drafts, [l]: m.name })}>
+                    Use
+                  </button>
+                  <span>
+                    Suggested: <strong>{m.name}</strong>
+                    <span className="muted"> — {matchReason(m)}</span>
+                  </span>
+                </p>
+              )}
               {s && (
                 <p className="speaker-suggestion">
                   <button type="button" onClick={() => setDrafts({ ...drafts, [l]: s.name })}>

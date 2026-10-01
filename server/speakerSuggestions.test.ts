@@ -54,6 +54,19 @@ describe("buildSuggestPrompt", () => {
     expect(cut).not.toContain("w199 ");
     expect(cut).toContain("transcript continues");
     expect(buildSuggestPrompt(pa, ASKED, 1000)[1].content).not.toContain("Invitees"); // ad-hoc: no calendar
+    expect(buildSuggestPrompt(pa, ASKED, 1000)[1].content).not.toContain("hints");
+  });
+
+  it("voice/calendar matches for asked labels as hints", () => {
+    const hints = {
+      "Speaker 1": { name: "Bob", reason: "voice" as const, score: 0.62 },
+      "Speaker 2": { name: "Carol", reason: "calendar" as const, score: null },
+      "Speaker 9": { name: "Zed", reason: "voice" as const, score: 0.9 },
+    };
+    const user = buildSuggestPrompt(pa, ASKED, 100_000, hints)[1].content;
+    expect(user).toContain('"Speaker 1": voice resembles Bob (similarity 0.62)');
+    expect(user).toContain('"Speaker 2": Carol is the only invitee not yet accounted for');
+    expect(user).not.toContain("Zed");
   });
 });
 

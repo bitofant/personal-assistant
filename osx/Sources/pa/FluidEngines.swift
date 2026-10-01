@@ -44,9 +44,13 @@ final class FluidDiarizer: SpeakerDiarizer, @unchecked Sendable {
         return FluidDiarizer(manager: m)
     }
 
-    func turns(in audio: URL) async throws -> [SpeakerTurn] {
-        try await manager.process(audio).segments.map {
+    func diarize(_ audio: URL) async throws -> Diarization {
+        let r = try await manager.process(audio)
+        let turns = r.segments.map {
             SpeakerTurn($0.speakerId, start: Double($0.startTimeSeconds), end: Double($0.endTimeSeconds))
         }
+        // speakerDatabase (v0.17.4 offline pipeline) = per-speaker mean of segment embeddings = VBx cluster centroids
+        // in the raw 256-d embedding space (checked in source) → comparable across recordings. nil → no voice matching.
+        return Diarization(turns: turns, embeddings: r.speakerDatabase ?? [:])
     }
 }

@@ -38,10 +38,13 @@ public struct DeviceMeResponse: Codable, Equatable, Sendable {
 public struct Person: Codable, Equatable, Sendable {
     public var name: String?
     public var email: String?
+    /// true = the Mac's user (EventKit `isCurrentUser`); nil otherwise (omitted on the wire). Server speaker matching skips them.
+    public var isSelf: Bool?
 
-    public init(name: String?, email: String?) {
+    public init(name: String?, email: String?, isSelf: Bool? = nil) {
         self.name = name
         self.email = email
+        self.isSelf = isSelf
     }
 }
 
@@ -94,10 +97,13 @@ public struct TranscriptUpload: Codable, Equatable, Sendable {
     public var segments: [TranscriptSegment]
     public var asrModel: String
     public var diarizationModel: String?
+    /// Segment speaker label → diarizer voice embedding (cluster centroid, `diarizationModel`'s space). nil = none (omitted).
+    public var speakerEmbeddings: [String: [Float]]?
 
     public init(
         id: String, startedAt: String, endedAt: String, meeting: MeetingMeta?,
-        segments: [TranscriptSegment], asrModel: String, diarizationModel: String?
+        segments: [TranscriptSegment], asrModel: String, diarizationModel: String?,
+        speakerEmbeddings: [String: [Float]]? = nil
     ) {
         self.id = id
         self.startedAt = startedAt
@@ -106,6 +112,7 @@ public struct TranscriptUpload: Codable, Equatable, Sendable {
         self.segments = segments
         self.asrModel = asrModel
         self.diarizationModel = diarizationModel
+        self.speakerEmbeddings = speakerEmbeddings
     }
 }
 

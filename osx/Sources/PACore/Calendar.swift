@@ -103,7 +103,7 @@ public struct ParticipantInfo: Equatable, Sendable {
 
 public func participantPerson(_ p: ParticipantInfo) -> Person? {
     let name = p.name?.trimmingCharacters(in: .whitespacesAndNewlines)
-    let person = Person(name: name?.isEmpty == false ? name : nil, email: emailFromParticipantURL(p.url))
+    let person = Person(name: name?.isEmpty == false ? name : nil, email: emailFromParticipantURL(p.url), isSelf: p.isCurrentUser ? true : nil)
     return person.name == nil && person.email == nil ? nil : person
 }
 

@@ -224,6 +224,7 @@ st_transcribe() {
   need_build; need_stamp
   run transcribe-no-diarize "$pa" transcribe --stamp "$stamp" --no-diarize
   run transcribe "$pa" transcribe --stamp "$stamp" || return
+  expect transcribe 'voice embeddings for [1-9][0-9]* speaker' "diarizer voice embeddings (auto speaker naming)"
   ask "Words mostly right, segments split sensibly"
   ask "Speakers: you on mic, Speaker 1..N on system audio"
 }

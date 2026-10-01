@@ -214,6 +214,21 @@ export const USER_MIGRATIONS = [
     PRIMARY KEY (transcript_id, label)
   );
   `,
+  // Auto speaker names (voice/calendar match at upload) live in speaker_names, marked so a user name always wins and
+  // only user names serve as voiceprints. Embeddings = per-label float32 vectors from the device's diarizer.
+  `
+  ALTER TABLE speaker_names ADD COLUMN source TEXT NOT NULL DEFAULT 'user' CHECK (source IN ('user', 'auto'));
+  ALTER TABLE speaker_names ADD COLUMN reason TEXT;
+  ALTER TABLE speaker_names ADD COLUMN score REAL;
+  CREATE TABLE speaker_embeddings (
+    transcript_id TEXT NOT NULL REFERENCES transcripts(id) ON DELETE CASCADE,
+    label TEXT NOT NULL,
+    model TEXT NOT NULL,
+    vector BLOB NOT NULL,
+    PRIMARY KEY (transcript_id, label)
+  );
+  CREATE INDEX speaker_embeddings_model ON speaker_embeddings(model);
+  `,
 ] as const;
 
 // Part of shipped migration 4 (append-only): changing what's indexed = new migration that drops + rebuilds.
