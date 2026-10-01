@@ -6,7 +6,10 @@ import type { IncomingMessage } from "node:http";
 import { Auth, type User } from "./auth.js";
 import { parseConfig, type Config } from "./config.js";
 import { Store } from "./db.js";
-import { codesMatch, Devices, MAX_PENDING_PER_USER, PAIRING_TTL_MS } from "./devices.js";
+import { HttpError } from "./http.js";
+import { codesMatch, Devices, MAX_PENDING_PER_USER, PAIRING_TTL_MS, parseDeviceName } from "./devices.js";
+import { deviceUploadStats, parseTranscriptUpload, upsertTranscript } from "./transcripts.js";
+import { readFileSync } from "node:fs";
 
 const TOKEN = "t".repeat(40);
 const req = (token: string) => ({ headers: { authorization: `Bearer ${token}` } }) as IncomingMessage;
@@ -114,5 +117,42 @@ describe("Devices", () => {
     config = parseConfig({ users: ["alice"] });
     devices.remove(alice, p.deviceId);
     expect(devices.authedDevice(req(TOKEN))).toBeNull();
+  });
+
+  it("rename: own devices only (pending too); validated; device API sees the new name; re-pair keeps it", () => {
+    const p = devices.pair(TOKEN, { account: "alice", deviceName: "Joran's MacBook Pro" });
+    expect(devices.rename(alice, p.deviceId, { name: "  Work Mac " })).toMatchObject({ id: p.deviceId, name: "Work Mac", status: "pending" });
+    devices.approve(alice, p.deviceId, { pairingCode: p.pairingCode });
+    expect(devices.me(req(TOKEN)).deviceName).toBe("Work Mac");
+    devices.pair(TOKEN, { account: "alice", deviceName: "Joran's MacBook Pro" }); // idempotent re-pair
+    expect(devices.list(alice)[0].name).toBe("Work Mac");
+    const status = (f: () => unknown) => {
+      try {
+        f();
+      } catch (e) {
+        return (e as HttpError).status;
+      }
+      return 200;
+    };
+    expect(status(() => devices.rename(bob, p.deviceId, { name: "Mine now" }))).toBe(404);
+    expect(devices.list(alice)[0].name).toBe("Work Mac");
+    for (const bad of [{}, { name: 5 }, { name: "  " }, { name: "x".repeat(101) }, { name: "a\nb" }]) expect(status(() => parseDeviceName(bad))).toBe(400);
+    expect(parseDeviceName({ name: "x".repeat(100) })).toHaveLength(100);
+  });
+
+  it("list: transcript count + last upload (column, else newest received); missing = null/0", () => {
+    const p = devices.pair(TOKEN, { account: "alice", deviceName: "Mac" });
+    devices.approve(alice, p.deviceId, { pairingCode: p.pairingCode });
+    const db = store.user(alice.id);
+    const base = JSON.parse(readFileSync("shared/fixtures/transcript-upload.json", "utf8"));
+    upsertTranscript(db, p.deviceId, parseTranscriptUpload(base), "{}", 5000);
+    upsertTranscript(db, p.deviceId, parseTranscriptUpload({ ...base, id: "00000000-0000-4000-8000-000000000002" }), "{}", 7000);
+    upsertTranscript(db, "revoked-device", parseTranscriptUpload({ ...base, id: "00000000-0000-4000-8000-000000000003" }), "{}", 9000);
+    expect(devices.list(alice)[0]).toMatchObject({ transcriptCount: 0, lastUploadAt: null }); // no stats passed
+    const stats = deviceUploadStats(db);
+    expect(devices.list(alice, stats)[0]).toMatchObject({ transcriptCount: 2, lastUploadAt: new Date(7000).toISOString() });
+    t = 20_000;
+    devices.recordUpload(p.deviceId);
+    expect(devices.list(alice, stats)[0].lastUploadAt).toBe(new Date(20_000).toISOString());
   });
 });

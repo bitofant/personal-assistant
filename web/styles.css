@@ -775,3 +775,52 @@ details .editor {
   min-width: 8em;
   color: var(--muted);
 }
+
+/* LLM name proposal under a speaker input; indented to line up with the input. */
+.speaker-row {
+  margin-bottom: 6px;
+}
+
+.speaker-suggestion {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 4px 0 0 calc(8em + 8px);
+  font-size: 13px;
+}
+
+.speaker-suggestion span {
+  min-width: 0;
+}
+
+.speakers summary .badge {
+  margin-left: 8px;
+}
+
+@media (max-width: 640px) {
+  .speaker-suggestion {
+    margin-left: 0;
+  }
+}
+
+/* Devices page: inline rename + activity line under the name row. */
+button.link-button {
+  background: none;
+  padding: 0;
+  color: var(--accent);
+  font-size: 13px;
+}
+
+.device-rename input {
+  min-width: 14em;
+}
+
+.device-activity {
+  margin: 6px 0 0;
+  font-size: 13px;
+}
+
+.device-help {
+  font-size: 13px;
+  max-width: 70ch;
+}

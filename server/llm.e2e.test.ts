@@ -318,3 +318,32 @@ describe.skipIf(!chatUp)("live local LLM: meeting classification", () => {
     }
   });
 });
+
+describe.skipIf(!chatUp)("live local LLM: speaker suggestions", () => {
+  it("names from introductions / being addressed; a label with no cue is skipped", async () => {
+    const { buildSuggestPrompt, parseSuggestReply } = await import("./speakerSuggestions.js");
+    const { parseTranscriptUpload } = await import("./transcripts.js");
+    const { readFileSync } = await import("node:fs");
+    const base = JSON.parse(readFileSync("shared/fixtures/transcript-upload.json", "utf8"));
+    const lines: [string, string][] = [
+      ["Alice Example", "Goedemorgen allemaal. Marieke, wil jij beginnen met de cijfers?"],
+      ["Speaker 1", "Ja, dank je. De omzet in Q3 lag acht procent boven plan."],
+      ["Speaker 2", "Mag ik daar even op inhaken? Hoi, ik ben trouwens Pieter, voor wie me nog niet kent."],
+      ["Speaker 1", "Natuurlijk Pieter, ga je gang."],
+      ["Speaker 3", "Ik heb nog een vraag over de planning van de migratie."],
+    ];
+    const t = parseTranscriptUpload({
+      ...base,
+      meeting: { ...base.meeting, title: "Q4 planning", attendees: ["Marieke de Vries", "Pieter Jansen", "Sanne Bakker"].map((name) => ({ name, email: null })) },
+      segments: lines.map(([speaker, text], i) => ({ start: i * 6, end: i * 6 + 5, speaker, text })),
+    });
+    const labels = ["Speaker 1", "Speaker 2", "Speaker 3"];
+    const r = await liveLlm!.chat("summary", buildSuggestPrompt(t, labels, 30_000), { temperature: 0 });
+    const s = parseSuggestReply(r.text, labels);
+    // Hard gate: parseable reply. Which names = model quality, soft (gemma-4-31B: Marieke de Vries / Pieter Jansen / none, verified live).
+    expect(s).not.toBeNull();
+    console.log(`live speaker suggestions (${r.model}): ${JSON.stringify(s)}`);
+    if (s!["Speaker 1"]?.name !== "Marieke de Vries" || s!["Speaker 2"]?.name !== "Pieter Jansen") console.warn("live suggestions: expected Marieke de Vries / Pieter Jansen");
+    if (s!["Speaker 3"]) console.warn(`live suggestions: guessed Speaker 3 = ${s!["Speaker 3"].name} without evidence`);
+  });
+});

@@ -163,6 +163,16 @@ interface Row {
   updated_at: number;
 }
 
+/** Transcript count + newest first-receive time per device id (incl. revoked devices' ids). */
+export function deviceUploadStats(db: Db): Map<string, { count: number; lastReceivedAt: number | null }> {
+  const rows = db.prepare("SELECT device_id, count(*) AS n, max(received_at) AS last FROM transcripts GROUP BY device_id").all() as {
+    device_id: string;
+    n: number;
+    last: number | null;
+  }[];
+  return new Map(rows.map((r) => [r.device_id, { count: r.n, lastReceivedAt: r.last }]));
+}
+
 const LIST_COLUMNS = "id, device_id, started_at, ended_at, title, calendar_name, attendee_count, segment_count";
 
 function toListItem(r: Row, deviceNames: Map<string, string>): TranscriptListItem {

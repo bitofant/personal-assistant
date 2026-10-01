@@ -30,6 +30,25 @@ interface DeviceRow {
   expires_at: number | null;
   approved_at: number | null;
   last_used_at: number | null;
+  last_upload_at?: number | null;
+}
+
+/** Per-device numbers from the user's DB (transcripts live there, devices in app.db). */
+export interface DeviceUploadStats {
+  count: number;
+  lastReceivedAt: number | null;
+}
+
+// eslint-disable-next-line no-control-regex
+const CONTROL = /[\u0000-\u001f\u007f]/;
+
+export function parseDeviceName(raw: unknown): string {
+  if (!isRecord(raw) || typeof raw.name !== "string") throw new HttpError(400, "name required.");
+  const name = raw.name.trim();
+  if (!name) throw new HttpError(400, "name must not be empty.");
+  if (name.length > MAX_NAME) throw new HttpError(400, `name is too long (max ${MAX_NAME}).`);
+  if (CONTROL.test(name)) throw new HttpError(400, "name contains control characters.");
+  return name;
 }
 
 export function parsePairRequest(raw: unknown): { account: string; deviceName: string } {
@@ -149,20 +168,40 @@ export class Devices {
     return { deviceId: d.id, account: d.username, deviceName: d.name, status: d.status };
   }
 
-  list(user: User): DeviceInfo[] {
+  list(user: User, stats: ReadonlyMap<string, DeviceUploadStats> = new Map()): DeviceInfo[] {
     this.dropExpired();
     const rows = this.db
       .prepare("SELECT * FROM devices WHERE user_id = ? ORDER BY created_at DESC")
       .all(user.id) as DeviceRow[];
-    return rows.map((r) => ({
+    return rows.map((r) => this.info(r, stats.get(r.id)));
+  }
+
+  private info(r: DeviceRow, s: DeviceUploadStats | undefined): DeviceInfo {
+    return {
       id: r.id,
       name: r.name,
       status: r.status,
       createdAt: iso(r.created_at)!,
       approvedAt: iso(r.approved_at),
       lastUsedAt: iso(r.last_used_at),
+      // Column is newer (counts unchanged re-uploads); fallback covers uploads from before it existed.
+      lastUploadAt: iso(r.last_upload_at ?? s?.lastReceivedAt ?? null),
+      transcriptCount: s?.count ?? 0,
       expiresAt: r.status === "pending" ? iso(r.expires_at) : null,
-    }));
+    };
+  }
+
+  rename(user: User, deviceId: string, raw: unknown, stats: ReadonlyMap<string, DeviceUploadStats> = new Map()): DeviceInfo {
+    const name = parseDeviceName(raw);
+    this.dropExpired();
+    const res = this.db.prepare("UPDATE devices SET name = ? WHERE id = ? AND user_id = ?").run(name, deviceId, user.id);
+    if (res.changes === 0) throw new HttpError(404, "No such device.");
+    return this.info(this.db.prepare("SELECT * FROM devices WHERE id = ?").get(deviceId) as DeviceRow, stats.get(deviceId));
+  }
+
+  /** After an accepted transcript upload. */
+  recordUpload(deviceId: string): void {
+    this.db.prepare("UPDATE devices SET last_upload_at = ? WHERE id = ?").run(this.now(), deviceId);
   }
 
   approve(user: User, deviceId: string, raw: unknown): void {

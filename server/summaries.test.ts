@@ -238,6 +238,7 @@ describe("summary storage", () => {
       model: "m1",
       createdAt: new Date(5000).toISOString(),
       stale: false,
+      instructionsChanged: false,
       parts: 3,
     });
     upsertTranscript(db, "dev", t, RAW, 2000); // identical: still fresh
@@ -245,6 +246,27 @@ describe("summary storage", () => {
     upsertTranscript(db, "dev", { ...t, segments: t.segments.slice(1) }, RAW, 3000);
     expect(getSummary(db, t.id)?.stale).toBe(true);
     expect(db.prepare("SELECT instructions, prompt_tokens FROM summaries").get()).toEqual({ instructions: builtin("1on1").text, prompt_tokens: null });
+  });
+
+  it("instructionsChanged: only edits that apply to this meeting's type/series count; reverting clears it", () => {
+    const db = new Database(":memory:");
+    migrate(db, USER_MIGRATIONS);
+    const t = fixture(); // 1on1, series AAMkAGI2TG93SERIES=
+    upsertTranscript(db, "dev", t, RAW, 1000);
+    saveSummary(db, { transcriptId: t.id, text: "S", meetingType: "1on1", meetingTypeSource: "rule", instructions: builtin("1on1"), provider: "local", model: "m1", usage: { promptTokens: null, completionTokens: null }, parts: 1, transcriptUpdatedAt: 1000 }, 5000);
+    const changed = () => getSummary(db, t.id)?.instructionsChanged;
+    expect(changed()).toBe(false);
+    putInstruction(db, "type", "standup", "OTHER TYPE", 1);
+    putInstruction(db, "series", "OTHER-SERIES", "OTHER SERIES", 1);
+    expect(changed()).toBe(false);
+    putInstruction(db, "series", "AAMkAGI2TG93SERIES=", "SERIES", 1);
+    expect(changed()).toBe(true);
+    db.prepare("DELETE FROM instructions WHERE scope = 'series'").run();
+    expect(changed()).toBe(false);
+    // Same text as the built-in, but now from "type:1on1" → still a change (source differs).
+    putInstruction(db, "type", "1on1", builtin("1on1").text, 1);
+    expect(changed()).toBe(true);
+    expect(getSummary(db, t.id)?.stale).toBe(false); // independent of transcript staleness
   });
 
   it("transcript deleted while the LLM ran → save is a no-op, not an FK error / orphan row", () => {
@@ -443,6 +465,44 @@ describe("summarizeHandler", () => {
     }
   });
 
+  it("long transcript: outage mid-way → notes kept in the DB → retry resumes; cache cleared once saved", async () => {
+    let down = false;
+    let n = 0;
+    const { store, handler, calls, cleanup } = setup(async (m) => {
+      n++;
+      if (down && n > 3) throw new LlmError("ECONNREFUSED", true);
+      return reply(m[0].content.startsWith("You take notes") ? `- notes ${n}` : "## Whole meeting");
+    }, 8192);
+    try {
+      const db = store.user(1);
+      const t = longTranscript(600);
+      upsertTranscript(db, "dev", t, RAW, 1000);
+      const rows = () => (db.prepare("SELECT count(*) n FROM summary_calls").get() as { n: number }).n;
+      down = true;
+      await expect(handler(job(t.id), new AbortController().signal)).rejects.toMatchObject({ retryable: true });
+      expect(rows()).toBe(3);
+      expect(getSummary(db, t.id)).toBeNull();
+
+      down = false;
+      const before = calls.length;
+      await handler(job(t.id), new AbortController().signal);
+      const s = getSummary(db, t.id)!;
+      expect(s.text).toBe("## Whole meeting");
+      expect(calls.length - before).toBe(s.parts! + 1 - 3); // the 3 finished parts not redone
+      expect(rows()).toBe(0);
+
+      // Deleting the transcript drops leftover notes (FK cascade).
+      down = true;
+      n = 0;
+      await expect(handler(job(t.id), new AbortController().signal)).rejects.toMatchObject({ retryable: true });
+      expect(rows()).toBe(3);
+      deleteTranscript(db, t.id, 2000);
+      expect(rows()).toBe(0);
+    } finally {
+      cleanup();
+    }
+  });
+
   it("missing transcript = no-op, no LLM call", async () => {
     const { handler, calls, cleanup } = setup(async () => reply("x"));
     try {
@@ -629,6 +689,27 @@ describe("summarizeTranscript", () => {
     expect(err).toBeInstanceOf(Error);
     expect(err.message).toMatch(/contextTokens/);
     expect((err as { retryable?: boolean }).retryable).toBeUndefined();
+  });
+
+  it("with a cache: retry after an outage resumes from the notes already taken, same result + usage", async () => {
+    const t = longTranscript(600);
+    const memo = new Map<string, ChatResult>();
+    const cache = { get: (k: string) => memo.get(k) ?? null, put: (k: string, r: ChatResult) => void memo.set(k, r) };
+    const failing = modelWithWindow(8192, { failOnCall: 4 });
+    await expect(summarizeTranscript(t, builtin("meeting"), failing.llm, { contextTokens: 8192, cache })).rejects.toMatchObject({ retryable: true });
+    expect(memo.size).toBe(3); // parts 1–3 done before the outage
+
+    const retry = modelWithWindow(8192);
+    const r = await summarizeTranscript(t, builtin("meeting"), retry.llm, { contextTokens: 8192, cache });
+    const fresh = modelWithWindow(8192);
+    const ref = await run(t, fresh.llm, 8192);
+    expect(retry.calls.length).toBe(fresh.calls.length - 3);
+    expect(r).toEqual(ref); // cached usage counted too
+
+    // Different route = different key: no reuse across models.
+    const other = modelWithWindow(8192);
+    await summarizeTranscript(t, builtin("meeting"), other.llm, { contextTokens: 8192, cache, route: { provider: "paid", model: "big" } });
+    expect(other.calls.length).toBe(fresh.calls.length);
   });
 
   it("outage mid-way propagates as retryable; unknown usage stays unknown", async () => {
