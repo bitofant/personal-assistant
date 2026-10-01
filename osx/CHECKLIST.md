@@ -13,9 +13,9 @@ First live run of everything that has only been built/tested on Linux. Goal: fir
 ## Run
 
 ```sh
-osx/mac-check.sh --tunnel <devbox-ssh-host> --account <you>
-# or, server reachable over https:
-osx/mac-check.sh --server https://… --account <you>
+# on the home LAN (the server is LAN-only, see docs/remote-access.md):
+osx/mac-check.sh --server https://assistant.riuna.com --account <you>
+# --tunnel <devbox-ssh-host> forwards to the box's localhost:4200 → only works while server.host = 127.0.0.1
 ```
 
 It walks through every step, and stops when you need to do something ("start the video, press a key", "type the
