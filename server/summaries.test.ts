@@ -38,6 +38,7 @@ import {
   summarizeHandler,
 } from "./summaries.js";
 import { deleteTranscript, parseTranscriptUpload, upsertTranscript } from "./transcripts.js";
+import { setSpeakerNames } from "./speakers.js";
 
 const RAW = readFileSync("shared/fixtures/transcript-upload.json", "utf8");
 const fixture = (over: Partial<TranscriptUpload> = {}) => parseTranscriptUpload({ ...JSON.parse(RAW), ...over });
@@ -325,6 +326,27 @@ describe("summarizeHandler", () => {
       expect(calls).toHaveLength(1);
       expect(calls[0][1].content).toContain("hiring plan");
       expect(getSummary(store.user(1), t.id)).toMatchObject({ text: "## Summary\n- hiring plan", meetingType: "1on1", model: "m1", stale: false, parts: 1 });
+    } finally {
+      cleanup();
+    }
+  });
+
+  it("speaker names reach the prompt; renaming makes the summary stale", async () => {
+    const { store, handler, calls, cleanup } = setup(async () => reply("## S"));
+    try {
+      const db = store.user(1);
+      const t = parseTranscriptUpload(JSON.parse(readFileSync("shared/fixtures/transcript-upload-pa.json", "utf8")));
+      upsertTranscript(db, "dev", t, RAW, 1000);
+      setSpeakerNames(db, t.id, new Map([["Speaker 1", "Bob Builder"]]), 2000);
+      await handler(job(t.id), new AbortController().signal);
+      const prompt = calls.at(-1)![1].content;
+      expect(prompt).toContain("Bob Builder:");
+      expect(prompt).not.toContain("Speaker 1:");
+      expect(prompt).toContain("Speaker 2:");
+      expect(getSummary(db, t.id)?.stale).toBe(false);
+      // Same clock as the summary: still strictly newer → stale.
+      setSpeakerNames(db, t.id, new Map([["Speaker 2", "Carol"]]), 2000);
+      expect(getSummary(db, t.id)?.stale).toBe(true);
     } finally {
       cleanup();
     }

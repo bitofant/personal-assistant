@@ -5,7 +5,7 @@ Self-hosted meeting assistant. A headless macOS agent records and transcribes yo
 - `server/`: Node/TypeScript backend (plain `node:http`, SQLite); also serves the web UI
 - `web/`: React + Vite frontend
 - `shared/`: wire types (`api.ts`) + JSON fixtures shared with the Swift client
-- `osx/`: headless Swift CLI `pa` (audio capture spike, plus pair/status/upload to the server)
+- `osx/`: headless Swift CLI `pa`: `pa run` daemon records meetings (calendar + mic detection), transcribes on-device, uploads to the server
 
 Status: early. The server supports:
 - web accounts (sign up while `auth.signup` is on, then an admin enables the account)
@@ -16,7 +16,10 @@ Status: early. The server supports:
 - summary settings page: pick the summary model (e.g. local or a paid remote one, from those the admin configured) and write custom instructions per recurring series, per meeting type, or as your default. The most specific ones win. The meeting type (1:1, stand-up, interview, external, meeting, ad-hoc) comes from the calendar event: no event means ad-hoc, title keywords decide next, and 2 attendees means 1:1. When those rules can't tell, a recurring meeting reuses the type of its earlier occurrences, and otherwise the LLM classifies it.
 - keyword search (search box in the nav bar, `GET /api/search?q=`) over titles, attendee names/emails and what was said. Every word must appear somewhere in the meeting; words match as prefixes, `"quoted phrases"` match exactly, and case and accents are ignored. Results show the best matching lines highlighted; click a timestamp to jump to that line. Filter by date range and by people (name or email, comma-separated; all must have attended). Filters work without a query too, listing matching meetings newest first. Semantic (embedding) search isn't built yet; see `AGENTS.md`.
 
-Data lives in `data/` (gitignored): `app.db` holds accounts, sessions, devices and the job queue, and `users/<id>.db` holds one user's transcripts, search index, summaries, custom instructions and settings.
+- speaker names: on a transcript page, open Speakers and name the diarization labels ("Speaker 2" → "Bob"). People from the calendar invite are offered as suggestions. Names show in the transcript and in search results, and the next summary uses them (the current summary is marked out of date).
+- account page: download everything stored for you as one JSON file, or delete your account. Deleting needs your password and removes your transcripts, summaries, devices and sessions, plus your copies in every backup. The admin should then remove the username from `config.json` `users`.
+
+Data lives in `data/` (gitignored): `app.db` holds accounts, sessions, devices and the job queue, and `users/<id>.db` holds one user's transcripts, search index, summaries, speaker names, custom instructions and settings.
 
 ## Server setup (Linux)
 
@@ -98,10 +101,30 @@ To transcribe a recording on the Mac (Parakeet v3 speech-to-text + speaker diari
 ./bench-asr.sh           # FluidAudio's own CLI on the newest capture: speed + raw transcripts
 ./pa transcribe          # newest capture → ~/pa-test-capture/pa-<stamp>-transcript.json
 ./pa transcribe --upload # …and queue it for upload to the paired server (tries once now)
-./pa queue               # pending + failed uploads
-./pa run                 # daemon (so far: retries the upload queue)
+./pa queue               # recordings not yet transcribed + pending/failed uploads
 ```
 
 `pa transcribe` labels the mic stream as you (`--me NAME`, default: your macOS full name) and splits the system stream into `Speaker 1`, `Speaker 2`, …. Use `--stamp yyyyMMdd-HHmmss` to pick an older recording and `--no-diarize` to skip speaker separation. Re-running on the same recording keeps its id, so a re-upload replaces the transcript instead of duplicating it. Uploads go through a queue on disk (`~/Library/Application Support/com.bitofant.pa/upload-queue/`): if the server is unreachable, `pa run` retries with backoff; a revoked or unpaired device pauses the queue until you `pa pair` again; uploads the server rejects as invalid move to `failed/`. If you deleted that transcript in the web UI, the upload is refused (and dropped from the queue); delete the `-transcript.json` file to transcribe it again as a new transcript.
 
-`osx/pa` launches `test-capture` through `open`, so the permission prompts belong to PA. If you run the binary directly from a terminal, macOS attributes them to the terminal app instead. Under `open`, `osx/pa` always exits 0, so read the output for errors.
+### Daemon (`pa run`)
+
+`pa run` records meetings by itself. Every 5 s it checks whether another app is using the mic, whether a meeting app (Zoom, Teams, Webex, FaceTime, Slack, or a browser) is running, and which work-calendar events are near. It starts recording when the mic comes on, or when a meeting app is open during an invited work event (from 5 min before the start until 10 min after the end). It stops after 2 min without activity, and discards recordings that were active for less than 1 min. When it stops, it transcribes the recording, queues it for upload, and deletes the audio.
+
+```sh
+./pa calendars           # Source/Name of every calendar (first run asks for Calendar access)
+./pa run                 # foreground, through PA.app (asks for the mic); Ctrl-C stops cleanly
+./install.sh             # LaunchAgent: starts at login, restarts on crash; log ~/Library/Logs/com.bitofant.pa.log
+./install.sh --uninstall
+```
+
+Settings live in `~/Library/Application Support/com.bitofant.pa/config.json`. `pa run` re-reads the file every minute:
+
+- `workCalendars`: calendars whose events label recordings, as `Name` or `Source/Name` (copy them from `pa calendars`). If this is empty, every recording is ad-hoc, so titles from personal events never reach the server.
+- `ignoreMicApps`: bundle ids whose mic use doesn't mean "in a call". The log names the processes holding the mic whenever that changes.
+- `keepAudioDays`: keep the audio this many days after transcription, in `recordings/kept/`. Off by default.
+
+Recordings sit in `recordings/` (`<id>-mic.wav`, `<id>-system.wav`, `<id>.json`) until they are transcribed. If `pa` is killed mid-recording, the next start transcribes what was saved. A transcription that fails 3 times is left there and listed by `pa queue`. Only one `pa run` records at a time: a second one waits until the first exits. `pa run --no-record` only uploads the queue.
+
+Grant permissions before installing the LaunchAgent, because macOS only prompts for an interactive launch: run `./pa calendars` and `./pa test-capture --seconds 5`, then `./pa run` once.
+
+`osx/pa` launches `test-capture`, `run` and `calendars` through `open`, so the permission prompts belong to PA. If you run the binary directly from a terminal, macOS attributes them to the terminal app instead. Under `open`, `osx/pa` always exits 0, so read the output for errors.

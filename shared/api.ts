@@ -163,6 +163,20 @@ export interface TranscriptDetail extends TranscriptUpload {
   summary: TranscriptSummary | null;
   /** null = never queued (e.g. uploaded before summaries existed). */
   summaryJob: JobState | null;
+  /** User-given names for segment `speaker` labels (label → name). Segments keep the raw label; render the name. */
+  speakerNames: Record<string, string>;
+}
+
+/**
+ * PUT /api/transcripts/:id/speakers (web) → 200 SpeakerNamesResponse. Partial: only the labels listed change;
+ * null/blank name = back to the label. Labels must occur in the transcript. Marks the summary stale.
+ */
+export interface SpeakerNamesRequest {
+  names: Record<string, string | null>;
+}
+
+export interface SpeakerNamesResponse {
+  speakerNames: Record<string, string>;
 }
 
 // ---- Search ----
@@ -312,6 +326,34 @@ export interface SettingsResponse {
 /** PUT /api/settings */
 export interface SettingsRequest {
   summaryLlm: LlmRouteRef | null;
+}
+
+// ---- Account ----
+
+/** GET /api/export (web): everything stored for the user, as a download. */
+export interface UserExport {
+  format: "personal-assistant-export/1";
+  exportedAt: string;
+  username: string;
+  transcripts: ExportedTranscript[];
+  instructions: CustomInstruction[];
+  settings: { summaryLlm: LlmRouteRef | null };
+  devices: DeviceInfo[];
+}
+
+export interface ExportedTranscript {
+  /** As stored (normalized upload). */
+  transcript: TranscriptUpload;
+  deviceName: string | null;
+  receivedAt: string;
+  updatedAt: string;
+  speakerNames: Record<string, string>;
+  summary: TranscriptSummary | null;
+}
+
+/** DELETE /api/account (web) → 204 + session cookie cleared. Password re-checked. Also purged from backups. */
+export interface DeleteAccountRequest {
+  password: string;
 }
 
 // ---- LLM ----

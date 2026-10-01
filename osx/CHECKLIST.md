@@ -22,10 +22,15 @@ It walks through every step, and stops when you need to do something ("start the
 code in the web UI", "revoke the device") or judge something (it plays the recordings back, shows transcripts;
 answer `y` / `n` + a note / `s` skip). Everything it can check itself it checks.
 
-Stages: `prereqs build capture bench transcribe pair upload queue`. `q` or Ctrl-C quits (report still written).
+Stages: `prereqs build capture bench transcribe pair upload queue daemon`. `q` or Ctrl-C quits (report still written).
 
-- **Build fails** (expected: FluidAudio code has never been compiled; errors in `Sources/pa/FluidEngines.swift` /
-  `Transcribe.swift`): fix, note each fix + why, then `osx/mac-check.sh --from build …`
+- **Next Mac session** (stages up to `queue` done 2026-09-30): `--only build`, then `--only queue` (410 drop step
+  wasn't exercised), then `--only daemon` (~15 min; needs a call or any app using the mic, plus audio playing).
+  Uninstall the LaunchAgent first if you installed it (`osx/install.sh --uninstall`).
+- **Build fails** (expected: the `pa run` daemon code has never been compiled; errors in `Sources/pa/Run.swift` /
+  `Calendars.swift` / `Signals.swift` / `CaptureRecorder.swift`): fix, note each fix + why, then
+  `osx/mac-check.sh --only build …`
+- After `daemon` passes: `osx/install.sh` (LaunchAgent, starts at login; log `~/Library/Logs/com.bitofant.pa.log`).
 - Redo one stage: `--only capture`, `--only queue`, …; longer recording: `--seconds 600`
 - Other mic: `osx/pick-mic.sh`
 - `--tunnel` = the script runs `ssh -L 4200:localhost:4200 <host>` and cuts it for the outage test; without it,

@@ -126,7 +126,9 @@ export class Auth {
       .prepare("INSERT INTO users (username, password_hash, created_at) VALUES (?, ?, ?) ON CONFLICT(username) DO NOTHING")
       .run(username, hash, this.now());
     if (res.changes === 0) throw new HttpError(409, "Username already taken.");
-    return { user: { id: Number(res.lastInsertRowid), username }, enabled: this.isEnabled(username) };
+    const id = Number(res.lastInsertRowid);
+    this.store.userCreated(id);
+    return { user: { id, username }, enabled: this.isEnabled(username) };
   }
 
   /** Returns a new session token. Disabled status revealed only after the password checks out. */
@@ -141,6 +143,15 @@ export class Auth {
     if (!this.isEnabled(username))
       throw new HttpError(403, "Account not enabled yet. Ask the admin to add it to config.json.");
     return { user: { id: row.id, username }, token: this.createSession(row.id) };
+  }
+
+  /** Re-auth for destructive actions (account delete): same throttle as login. 403 on a wrong password, not 401 (still logged in). */
+  async confirmPassword(user: User, raw: unknown): Promise<void> {
+    this.throttle();
+    const password = typeof raw === "object" && raw !== null ? (raw as Record<string, unknown>).password : undefined;
+    if (typeof password !== "string" || password.length > MAX_PASSWORD) throw new HttpError(400, "password required.");
+    const row = this.store.app.prepare("SELECT password_hash FROM users WHERE id = ?").get(user.id) as { password_hash: string } | undefined;
+    if (!row || !(await verifyPassword(password, row.password_hash))) throw new HttpError(403, "Wrong password.");
   }
 
   createSession(userId: number): string {

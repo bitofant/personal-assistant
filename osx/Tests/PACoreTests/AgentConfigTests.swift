@@ -13,6 +13,16 @@ import Testing
         #expect(try parseAgentConfig(Data("{}".utf8)).micDeviceUID == nil)
     }
 
+    @Test func recordingSettings() throws {
+        let c = try parseAgentConfig(Data(#"{"ignoreMicApps":[" com.apple.siri ",""],"keepAudioDays":7}"#.utf8))
+        #expect(c.ignoreMicApps == ["com.apple.siri"])
+        #expect(c.keepAudioDays == 7)
+        let d = try parseAgentConfig(Data(#"{"ignoreMicApps":[" "],"keepAudioDays":0}"#.utf8))
+        #expect(d.ignoreMicApps == nil)
+        #expect(d.keepAudioDays == nil)
+        #expect(try parseAgentConfig(encodeAgentConfig(c)) == c)
+    }
+
     @Test func ignoresUnknownKeys() throws {
         #expect(try parseAgentConfig(Data(#"{"micDeviceUID":"x","future":1}"#.utf8)).micDeviceUID == "x")
     }

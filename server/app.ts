@@ -8,6 +8,7 @@ import type {
   SearchResponse,
   SettingsResponse,
   SignupResponse,
+  SpeakerNamesResponse,
   AuthOptionsResponse,
   SummarizeResponse,
   TranscriptDetail,
@@ -15,6 +16,8 @@ import type {
   TranscriptSummaryResponse,
   TranscriptUploadResponse,
 } from "../shared/api.js";
+import { resolve } from "node:path";
+import { deleteAccount, exportFileName, exportUser } from "./account.js";
 import { Auth, clearSessionCookie, sessionCookie } from "./auth.js";
 import { LLM_TASKS, type Config } from "./config.js";
 import { Devices } from "./devices.js";
@@ -24,6 +27,7 @@ import { deleteInstruction, listInstructions, listSeries, parseInstructionTarget
 import { createLlm, routeChoices, type Llm } from "./llm.js";
 import { parseSearchRequest, searchTranscripts } from "./search.js";
 import { effectiveChoice, getSummaryLlm, parseRouteChoice, setSummaryLlm } from "./settings.js";
+import { getSpeakerNames, parseSpeakerNames, setSpeakerNames, speakerLabels } from "./speakers.js";
 import { getSummary, SUMMARIZE_JOB, summarizeHandler, type SummarizePayload } from "./summaries.js";
 import { bearerToken, HttpError, isRecord, readJson, sendError, sendJson, sendNoContent } from "./http.js";
 import { deleteTranscript, getTranscript, transcriptExists, listTranscripts, MAX_TRANSCRIPT_BYTES, parseTranscriptUpload, upsertTranscript } from "./transcripts.js";
@@ -157,7 +161,17 @@ export function createApp(opts: AppOptions): App {
     const db = store.user(user.id);
     const t = getTranscript(db, params[0], devices.names(user.id));
     if (!t) throw new HttpError(404, "No such transcript.");
-    sendJson(res, { ...t, ...summaryOf(user.id, t.id) } satisfies TranscriptDetail);
+    sendJson(res, { ...t, ...summaryOf(user.id, t.id), speakerNames: getSpeakerNames(db, t.id) } satisfies TranscriptDetail);
+  });
+  route("PUT", "/api/transcripts/:id/speakers", async ({ req, res, params }) => {
+    const user = auth.requireUser(req);
+    const { value } = await readJson(req);
+    const db = store.user(user.id);
+    const t = getTranscript(db, params[0], new Map());
+    if (!t) throw new HttpError(404, "No such transcript.");
+    const speakerNames = setSpeakerNames(db, t.id, parseSpeakerNames(value, speakerLabels(t)), now());
+    if (!speakerNames) throw new HttpError(404, "No such transcript.");
+    sendJson(res, { speakerNames } satisfies SpeakerNamesResponse);
   });
   route("DELETE", "/api/transcripts/:id", ({ req, res, params }) => {
     const user = auth.requireUser(req);
@@ -233,6 +247,22 @@ export function createApp(opts: AppOptions): App {
     if (!isRecord(value) || !("summaryLlm" in value)) throw new HttpError(400, "summaryLlm required (null = server default).");
     setSummaryLlm(store.user(user.id), parseRouteChoice(value.summaryLlm, routeChoices(opts.getConfig(), "summary")));
     sendJson(res, settingsOf(user.id));
+  });
+
+  // ---- account ----
+  route("GET", "/api/export", ({ req, res }) => {
+    const user = auth.requireUser(req);
+    res.setHeader("content-disposition", `attachment; filename="${exportFileName(user.username, now())}"`);
+    sendJson(res, exportUser(store, devices, user, now()));
+  });
+  route("DELETE", "/api/account", async ({ req, res }) => {
+    const user = auth.requireUser(req);
+    await auth.confirmPassword(user, (await readJson(req)).value);
+    // Same dir resolution as `npm run backup` (runBackup).
+    const purged = deleteAccount(store, user, resolve(process.cwd(), opts.getConfig().backup.dir));
+    console.log(`account ${user.username} (id ${user.id}) deleted; purged from ${purged.length} backup(s). Remove it from config.json users.`);
+    res.setHeader("set-cookie", clearSessionCookie());
+    sendNoContent(res);
   });
 
   // ---- LLM ----

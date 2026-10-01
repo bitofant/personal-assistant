@@ -1,9 +1,9 @@
 import { describe, expect, it } from "vitest";
-import { mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { cpSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import Database from "better-sqlite3";
-import { backupData, planPrune, snapshotName } from "./backup.js";
+import { backupData, planPrune, purgeUserFromBackups, snapshotName } from "./backup.js";
 import { Store } from "./db.js";
 import { parseTranscriptUpload, upsertTranscript } from "./transcripts.js";
 
@@ -59,6 +59,43 @@ describe("backupData", () => {
       expect(() => backupData(join(root, "data"), { dir: join(root, "b"), keep: 1 }, 0)).toThrow(/no app.db/);
       expect(readdirSync(root)).toEqual([]);
     } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+});
+
+describe("purgeUserFromBackups", () => {
+  it("removes the user's DB + app.db rows (cascade) from every snapshot and partial; others untouched", () => {
+    const root = mkdtempSync(join(tmpdir(), "pa-backup-"));
+    const data = join(root, "data");
+    const dir = join(root, "backups");
+    const store = new Store(data);
+    try {
+      store.app.prepare("INSERT INTO users (id, username, password_hash, created_at) VALUES (1, 'alice', 'secret-hash-a', 0), (2, 'bob', 'x', 0)").run();
+      store.app
+        .prepare("INSERT INTO devices (id, user_id, name, token_hash, status, created_at) VALUES ('d1', 1, 'Mac', 'h1', 'active', 0), ('d2', 2, 'Mac', 'h2', 'active', 0)")
+        .run();
+      store.user(1);
+      store.user(2);
+      const a = backupData(data, { dir, keep: 5 }, Date.UTC(2026, 8, 1)).snapshot;
+      const b = backupData(data, { dir, keep: 5 }, Date.UTC(2026, 8, 2)).snapshot;
+      cpSync(join(dir, b), join(dir, "20260903-000000Z.partial"), { recursive: true });
+      writeFileSync(join(dir, "README"), "mine");
+
+      expect(purgeUserFromBackups(dir, 1)).toEqual([a, b, "20260903-000000Z.partial"]);
+      for (const s of [a, b, "20260903-000000Z.partial"]) {
+        expect(readdirSync(join(dir, s, "users"))).toEqual(["2.db"]);
+        const db = new Database(join(dir, s, "app.db"), { readonly: true });
+        expect(db.prepare("SELECT username FROM users").all()).toEqual([{ username: "bob" }]);
+        expect(db.prepare("SELECT id FROM devices").all()).toEqual([{ id: "d2" }]);
+        db.close();
+        // VACUUM: the deleted row's bytes aren't left in free pages.
+        expect(readFileSync(join(dir, s, "app.db")).includes("secret-hash-a")).toBe(false);
+      }
+      expect(readFileSync(join(dir, "README"), "utf8")).toBe("mine");
+      expect(purgeUserFromBackups(join(root, "nope"), 1)).toEqual([]);
+    } finally {
+      store.close();
       rmSync(root, { recursive: true, force: true });
     }
   });
