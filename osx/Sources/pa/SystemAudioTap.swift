@@ -12,11 +12,12 @@ final class SystemAudioTap {
     private let queue = DispatchQueue(label: "pa.system-tap", qos: .userInitiated)
     private(set) var writer: WavWriter?
 
-    func start(writingTo url: URL) throws {
+    /// `name` shows up in Core Audio tools (HALLab, `log stream`) → tells test-capture and `pa run` taps apart.
+    func start(writingTo url: URL, name: String = "pa test-capture") throws {
         // No exclusions: pa plays no audio itself.
         let desc = CATapDescription(stereoGlobalTapButExcludeProcesses: [])
         desc.uuid = UUID()
-        desc.name = "pa test-capture"
+        desc.name = name
         desc.isPrivate = true
         // Tap must not silence the meeting for the user.
         desc.muteBehavior = .unmuted

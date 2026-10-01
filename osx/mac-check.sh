@@ -2,12 +2,12 @@
 # Guided first-Mac run = all of osx/CHECKLIST.md: runs every step, pauses when you need to act, asks y/n where only
 # a human can judge, logs everything to ~/pa-test-capture/report-<stamp>/ (+ .tgz) to bring to the dev box.
 # usage: osx/mac-check.sh [--from STAGE | --only STAGE] [--seconds N] [--server URL] [--account NAME] [--tunnel SSH_HOST]
-# stages: prereqs build capture bench transcribe pair upload queue
+# stages: prereqs build capture bench transcribe pair upload queue daemon
 # --tunnel: script runs `ssh -L 4200:localhost:4200 HOST` itself (server = http://localhost:4200) and can cut it
 # for the outage test. bash 3.2 (stock macOS).
 set -uo pipefail
 
-STAGES="prereqs build capture bench transcribe pair upload queue"
+STAGES="prereqs build capture bench transcribe pair upload queue daemon"
 from= only= seconds=30 server= account= tunnel=
 while [ $# -gt 0 ]; do
   case "$1" in
@@ -269,7 +269,7 @@ st_queue() {
   run outage-upload "$pa" transcribe --stamp "$stamp" --no-diarize --upload
   expect outage-upload 'still queued' "kept in queue during outage"
   run outage-queue "$pa" queue && expect outage-queue '^pending ' "pa queue shows it pending"
-  "$bin" run > "$log" 2>&1 & run_pid=$!
+  "$bin" run --no-record > "$log" 2>&1 & run_pid=$!
   echo "  pa run started (pid $run_pid, log pa-run.log)"
   sleep 5
   if [ -n "$tunnel" ]; then tunnel_up; echo "  tunnel restored"
@@ -304,6 +304,68 @@ st_queue() {
   run_pid=
 }
 
+# Daemon via osx/pa (PA.app → mic/calendar/system-audio grants); TERM to the wrapper → INT to pa → clean stop.
+start_daemon() {
+  "$pa" run >> "$1" 2>&1 & run_pid=$!
+  echo "  pa run started (wrapper pid $run_pid, log $(basename "$1"))"
+}
+stop_daemon() {
+  kill -TERM "$run_pid" 2>/dev/null; local i=0
+  while pgrep -f "^$bin run\$" >/dev/null && [ $i -lt 15 ]; do sleep 1; i=$((i + 1)); done
+  if pgrep -f "^$bin run\$" >/dev/null; then fail "pa run still running 15s after TERM"; pkill -KILL -f "^$bin run\$"
+  else pass "pa run stopped (${i}s)"; fi
+  wait "$run_pid" 2>/dev/null; run_pid=
+}
+
+st_daemon() {
+  need_build
+  [ -n "$server" ] || need_server
+  need_paired
+  local log="$report/daemon.log" recs="$HOME/Library/Application Support/com.bitofant.pa/recordings"
+  if launchctl print "gui/$(id -u)/com.bitofant.pa" >/dev/null 2>&1; then
+    pause "The LaunchAgent is installed: this test needs it stopped. Run osx/install.sh --uninstall in another terminal."
+  fi
+  echo "First time: allow Calendars for PA."
+  run calendars "$pa" calendars && expect calendars $'\t(work|-)$' "pa calendars lists calendars"
+  ask "Your work calendar is in that list"
+  pause "Put your work calendar(s) (first column above) in \"workCalendars\" in ~/Library/Application Support/com.bitofant.pa/config.json, e.g. \"workCalendars\": [\"Exchange/Calendar\"]. Skip this to test ad-hoc only."
+  run calendars-after "$pa" calendars
+  grep -q $'\twork$' "$report/calendars-after.log" && pass "a work calendar is configured" || note "  - no work calendar → recordings are ad-hoc"
+
+  : > "$log"
+  start_daemon "$log"
+  wait_for 30 "pa run polls mic/apps" grep -q 'meeting apps:' "$log"
+  grep -q 'permission denied' "$log" && fail "a permission is denied → daemon.log"
+
+  # 1. Normal call: mic in use by another app → record → stop after 2 min idle → transcribe → upload.
+  pause "Start a call (Zoom/Teams/Meet test call, or anything else using the mic: e.g. a Voice Memos recording) with audio playing from the other side (or a video). Press a key once it runs."
+  wait_for 30 "recording started when the mic came on" grep -qE 'recording [0-9a-f-]+ started' "$log"
+  grep -E 'mic: ' "$log" | tail -1 | sed 's/^/    /'
+  ask "The last 'mic:' line above names your call app (not pa, not something always-on)"
+  pause "Talk for ≥90 s (stay in the call), then END the call and press a key."
+  wait_for 200 "recording stopped ~2 min after the call ended" grep -qE 'stopped \(inactive\)' "$log"
+  grep -q 'all zeros' "$log" && fail "a stream was all zeros (System Audio Recording / mic permission?) → daemon.log"
+  wait_for 300 "transcribed + queued" grep -qE 'segments queued for upload' "$log"
+  wait_for 120 "uploaded" grep -qE ' (uploaded|replaced) ' "$log"
+  ask "The new transcript is in the web UI: your words under your name, the other side as Speaker N"
+  grep -q $'\twork$' "$report/calendars-after.log" &&
+    ask "If the call was during a work event: transcript is linked to it (title/attendees); else ad-hoc"
+  ls "$recs" 2>/dev/null | grep -q '\.wav$' && fail "audio left in $recs after upload" || pass "audio deleted after transcription"
+
+  # 2. SIGTERM mid-recording: kept (≥60 s active) + transcribed on the next start.
+  pause "Start the call/mic app again and keep talking; press a key."
+  wait_for 30 "second recording started" after_line "$log" 'uploaded|replaced' 'recording [0-9a-f-]+ started'
+  echo "  recording 75 s, then SIGTERM …"; sleep 75
+  stop_daemon
+  grep -q 'pa run: stopped' "$log" && pass "clean shutdown logged" || fail "no 'pa run: stopped' in daemon.log"
+  pause "End the call."
+  start_daemon "$log"
+  wait_for 300 "recording from before the stop is transcribed after restart" after_line "$log" 'pa run: stopped' 'segments queued for upload'
+  stop_daemon
+  run daemon-queue "$pa" queue
+  grep -q '^recording ' "$report/daemon-queue.log" && fail "recordings left untranscribed → daemon-queue.log" || pass "no recordings left"
+}
+
 note "mac-check $(date '+%Y-%m-%d %H:%M:%S %z') → $report"
 want prereqs && { stage prereqs "Mac + toolchain"; st_prereqs; }
 want build && { stage build "swift test + build.sh (first compile of the FluidAudio code)"; st_build; }
@@ -313,4 +375,5 @@ want transcribe && { stage transcribe "pa transcribe with and without diarizatio
 want pair && { stage pair "pair this Mac with the server"; st_pair; }
 want upload && { stage upload "first real transcript on the server"; st_upload; }
 want queue && { stage queue "upload queue + pa run: outage, revoke, re-pair, delete"; st_queue; }
+want daemon && { stage daemon "pa run: detect a call → record → transcribe → upload; clean SIGTERM"; st_daemon; }
 finish

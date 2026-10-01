@@ -77,3 +77,33 @@ export function runBackup(): string {
   const r = backupData(resolve(process.cwd(), "data"), { dir, keep: config.backup.keep }, Date.now());
   return `backup ${join(dir, r.snapshot)}: ${r.files.length} db file(s)${r.removed.length ? `; pruned ${r.removed.join(", ")}` : ""}`;
 }
+
+/**
+ * Deleted account → gone from every snapshot (+ leftover partials): users/<id>.db removed; app.db row deleted
+ * (FK cascade: sessions, devices, jobs) then VACUUM so freed pages don't keep username/password hash. Returns
+ * touched snapshot names. Unknown entries never touched.
+ */
+export function purgeUserFromBackups(backupDir: string, userId: number): string[] {
+  if (!Number.isSafeInteger(userId) || userId < 1) throw new Error(`bad user id ${userId}`);
+  if (!existsSync(backupDir)) return [];
+  const touched: string[] = [];
+  for (const e of readdirSync(backupDir).sort()) {
+    const name = e.endsWith(PARTIAL_SUFFIX) ? e.slice(0, -PARTIAL_SUFFIX.length) : e;
+    if (!SNAPSHOT_RE.test(name)) continue;
+    const dir = join(backupDir, e);
+    rmSync(join(dir, "users", `${userId}.db`), { force: true });
+    const app = join(dir, "app.db");
+    if (existsSync(app)) {
+      const db = new Database(app, { fileMustExist: true });
+      try {
+        db.pragma("foreign_keys = ON");
+        db.prepare("DELETE FROM users WHERE id = ?").run(userId);
+        db.exec("VACUUM");
+      } finally {
+        db.close();
+      }
+    }
+    touched.push(e);
+  }
+  return touched;
+}

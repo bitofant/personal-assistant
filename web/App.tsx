@@ -5,6 +5,7 @@ import type {
   MeResponse,
   SettingsResponse,
   SignupResponse,
+  SpeakerNamesResponse,
   AuthOptionsResponse,
   SummarizeResponse,
   TranscriptDetail,
@@ -17,7 +18,9 @@ import { describeInstructionsSource, meetingTypeLabel } from "../shared/instruct
 import { renderMarkdown } from "../shared/markdown.js";
 import { api, ApiError } from "./api.js";
 import { emptySearch, parseSearchHash, parseTranscriptHash, transcriptHash } from "./routes.js";
+import { Account } from "./Account.js";
 import { Search, SearchBox } from "./Search.js";
+import { displaySpeaker, nameSuggestions, speakerEdits, speakerLabels } from "./speakers.js";
 import { SummarySettings } from "./Settings.js";
 import { summaryStatusView, type SummaryTone } from "./summaryState.js";
 import { ErrorLine, routeKey, routeLabel } from "./ui.js";
@@ -32,12 +35,13 @@ function useHash(): string {
   return hash;
 }
 
-type Page = "transcripts" | "search" | "settings" | "devices";
+type Page = "transcripts" | "search" | "settings" | "devices" | "account";
 
 const NAV: { page: Page; href: string; name: string; sub: string }[] = [
   { page: "transcripts", href: "#/", name: "Transcripts", sub: "All recorded meetings" },
   { page: "settings", href: "#/settings", name: "Summary settings", sub: "Model · instructions" },
   { page: "devices", href: "#/devices", name: "Devices", sub: "Paired Macs" },
+  { page: "account", href: "#/account", name: "Account", sub: "Export · delete" },
 ];
 
 export function App() {
@@ -59,8 +63,9 @@ export function App() {
   const logout = () => api("/auth/logout", { method: "POST" }).finally(() => setMe(null));
   const detail = parseTranscriptHash(hash);
   const search = parseSearchHash(hash);
-  const page: Page = hash === "#/devices" ? "devices" : hash === "#/settings" ? "settings" : search ? "search" : "transcripts";
-  const title = { transcripts: detail ? "Transcript" : "Transcripts", search: "Search", settings: "Summary settings", devices: "Devices" }[page];
+  const page: Page =
+    hash === "#/devices" ? "devices" : hash === "#/settings" ? "settings" : hash === "#/account" ? "account" : search ? "search" : "transcripts";
+  const title = { transcripts: detail ? "Transcript" : "Transcripts", search: "Search", settings: "Summary settings", devices: "Devices", account: "Account" }[page];
   return (
     <div className="app">
       <button className="menu-toggle" onClick={() => setSidebarOpen(true)} aria-label="Open menu">
@@ -94,6 +99,8 @@ export function App() {
           <div className="content-inner">
             {page === "devices" ? (
               <Devices />
+            ) : page === "account" ? (
+              <Account username={me.username} onDeleted={() => setMe(null)} />
             ) : page === "settings" ? (
               <SummarySettings />
             ) : search ? (
@@ -216,9 +223,10 @@ function Transcript({ id, seg }: { id: string; seg: number | null }) {
   const [t, setT] = useState<TranscriptDetail | null>(null);
   const [error, setError] = useState<string | null>(null);
   const target = useRef<HTMLParagraphElement>(null);
-  useEffect(() => {
+  const load = useCallback(() => {
     api<TranscriptDetail>(`/transcripts/${encodeURIComponent(id)}`).then(setT, (e: Error) => setError(e.message));
   }, [id]);
+  useEffect(load, [load]);
   // Deep link from search: bring the matched segment into view once loaded.
   // Braces: newer Chromium's scrollIntoView returns a Promise, which React rejects as an effect cleanup.
   useEffect(() => {
@@ -238,12 +246,14 @@ function Transcript({ id, seg }: { id: string; seg: number | null }) {
       {m && m.attendees.length > 0 && (
         <p className="meta">With {m.attendees.map((a) => a.name ?? a.email).join(", ")}</p>
       )}
-      <SummaryPanel key={t.id} transcriptId={t.id} initial={{ summary: t.summary, summaryJob: t.summaryJob }} />
+      {/* key includes updatedAt: renaming a speaker reloads the detail → panel shows the summary as stale. */}
+      <SummaryPanel key={`${t.id}:${t.updatedAt}`} transcriptId={t.id} initial={{ summary: t.summary, summaryJob: t.summaryJob }} />
+      <SpeakerNames t={t} onSaved={load} />
       <h3>Transcript</h3>
       <div className="segments">
         {t.segments.map((s, i) => (
           <p key={i} ref={i === seg ? target : undefined} className={i === seg ? "target" : undefined}>
-            <span className="offset">{formatOffset(s.start)}</span> <span className="speaker">{formatValue(s.speaker)}:</span> {s.text}
+            <span className="offset">{formatOffset(s.start)}</span> <span className="speaker" title={s.speaker ?? undefined}>{formatValue(displaySpeaker(s.speaker, t.speakerNames))}:</span> {s.text}
           </p>
         ))}
       </div>
@@ -252,6 +262,58 @@ function Transcript({ id, seg }: { id: string; seg: number | null }) {
       </p>
       <DeleteTranscript id={t.id} title={m?.title ?? "this ad-hoc call"} />
     </article>
+  );
+}
+
+/** Name diarization labels; attendees offered as suggestions. Saving re-labels transcript + search, marks the summary stale. */
+function SpeakerNames({ t, onSaved }: { t: TranscriptDetail; onSaved: () => void }) {
+  const labels = useMemo(() => speakerLabels(t), [t]);
+  const [drafts, setDrafts] = useState<Record<string, string>>({});
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  if (!labels.length) return null;
+  // Input = draft, else saved name, else empty (placeholder shows the label).
+  const valueOf = (l: string) => drafts[l] ?? (Object.hasOwn(t.speakerNames, l) ? t.speakerNames[l] : "");
+  const edits = speakerEdits(t.speakerNames, Object.fromEntries(labels.map((l) => [l, valueOf(l)])));
+  const listId = `speaker-suggestions-${t.id}`;
+  const save = async (e: FormEvent) => {
+    e.preventDefault();
+    setBusy(true);
+    try {
+      await api<SpeakerNamesResponse>(`/transcripts/${encodeURIComponent(t.id)}/speakers`, { method: "PUT", body: { names: edits } });
+      setDrafts({});
+      setError(null);
+      onSaved();
+    } catch (err) {
+      setError((err as Error).message);
+    } finally {
+      setBusy(false);
+    }
+  };
+  return (
+    <details className="speakers">
+      <summary>Speakers ({labels.length})</summary>
+      <form onSubmit={(e) => void save(e)}>
+        <datalist id={listId}>
+          {nameSuggestions(t).map((n) => (
+            <option key={n} value={n} />
+          ))}
+        </datalist>
+        {labels.map((l) => (
+          <label key={l} className="row">
+            <span className="speaker-label">{l}</span>
+            <input className="grow" list={listId} placeholder={l} maxLength={100} value={valueOf(l)} onChange={(e) => setDrafts({ ...drafts, [l]: e.target.value })} />
+          </label>
+        ))}
+        <p className="row">
+          <button className="primary" disabled={busy || !Object.keys(edits).length}>
+            {busy ? "Saving…" : "Save names"}
+          </button>
+          <span className="muted grow">Empty = keep the label. Re-summarize afterwards to use the names in the summary.</span>
+        </p>
+        <ErrorLine error={error} />
+      </form>
+    </details>
   );
 }
 

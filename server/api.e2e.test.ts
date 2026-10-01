@@ -1,6 +1,6 @@
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { createServer, type Server } from "node:http";
-import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { AddressInfo } from "node:net";
@@ -14,12 +14,15 @@ import type {
   SearchResponse,
   SettingsResponse,
   SignupResponse,
+  SpeakerNamesResponse,
   SummarizeResponse,
   TranscriptDetail,
   TranscriptListResponse,
   TranscriptSummaryResponse,
+  UserExport,
 } from "../shared/api.js";
 import { createApp, type App } from "./app.js";
+import { backupData } from "./backup.js";
 import { parseConfig, type Config } from "./config.js";
 
 // Full HTTP flow against an in-process app on a random port + temp data dir; needs nothing external.
@@ -467,6 +470,52 @@ describe("API flow", () => {
     expect((await fetch(`${base}/api/transcripts/${upload.id.toLowerCase()}`, { headers: { cookie } })).status).toBe(200);
   });
 
+  it("speaker names: PUT validates, detail + search + export show them, summary goes stale", async () => {
+    const id = upload.id.toLowerCase();
+    const get = async () => (await (await fetch(`${base}/api/transcripts/${id}`, { headers: { cookie } })).json()) as TranscriptDetail;
+    const put = (body: unknown, headers: Record<string, string> = { cookie }) =>
+      fetch(`${base}/api/transcripts/${id}/speakers`, { method: "PUT", ...json(body, headers) });
+    const t = await get();
+    expect(t.speakerNames).toEqual({});
+    const label = t.segments.find((s) => s.speaker)!.speaker!;
+
+    expect((await put({ names: { [label]: "Zed" } }, {})).status).toBe(401);
+    expect((await put({ names: { "No Such Speaker": "Zed" } })).status).toBe(400);
+    const csrf = await fetch(`${base}/api/transcripts/${id}/speakers`, { method: "PUT", headers: { cookie, "content-type": "text/plain" }, body: "{}" });
+    expect(csrf.status).toBe(415);
+    expect((await fetch(`${base}/api/transcripts/0d0d0d0d-0000-4000-8000-000000000000/speakers`, { method: "PUT", ...json({ names: {} }, { cookie }) })).status).toBe(404);
+
+    const before = t.updatedAt;
+    const r = await put({ names: { [label]: "  Zed Zebra " } });
+    expect(r.status).toBe(200);
+    expect((await r.json()) as SpeakerNamesResponse).toEqual({ speakerNames: { [label]: "Zed Zebra" } });
+    const after = await get();
+    expect(after.speakerNames).toEqual({ [label]: "Zed Zebra" });
+    expect(after.segments.find((s) => s.speaker === label)).toBeTruthy(); // raw labels kept
+    expect(Date.parse(after.updatedAt)).toBeGreaterThan(Date.parse(before));
+    if (after.summary) expect(after.summary.stale).toBe(true);
+
+    const word = after.segments.find((s) => s.speaker === label)!.text.split(/\W+/).find((w) => w.length > 3)!;
+    const sr = (await (await fetch(`${base}/api/search?q=${encodeURIComponent(word)}`, { headers: { cookie } })).json()) as SearchResponse;
+    const hit = sr.results.find((x) => x.transcript.id === id)!;
+    expect(hit.segments.some((s) => s.speaker === "Zed Zebra")).toBe(true);
+
+    const ex = await fetch(`${base}/api/export`, { headers: { cookie } });
+    expect(ex.status).toBe(200);
+    expect(ex.headers.get("content-disposition")).toMatch(/^attachment; filename="personal-assistant-alice-\d{4}-\d\d-\d\d\.json"$/);
+    const data = (await ex.json()) as UserExport;
+    expect(data).toMatchObject({ format: "personal-assistant-export/1", username: "alice" });
+    const mine = data.transcripts.find((x) => x.transcript.id === id)!;
+    expect(mine.speakerNames).toEqual({ [label]: "Zed Zebra" });
+    expect(mine.transcript.segments.length).toBe(t.segments.length);
+    expect(mine.deviceName).toBe("MacBook Pro");
+    expect(data.devices.map((d) => d.id)).toContain(deviceId);
+    expect((await fetch(`${base}/api/export`)).status).toBe(401);
+
+    expect((await put({ names: { [label]: null } })).status).toBe(200);
+    expect((await get()).speakerNames).toEqual({});
+  });
+
   it("disabling the user in config cuts off both web session and device", async () => {
     config = parseConfig({ users: [] });
     expect((await fetch(`${base}/api/auth/me`, { headers: { cookie } })).status).toBe(401);
@@ -531,6 +580,54 @@ describe("login throttle (default interval)", () => {
       expect(r.status).toBe(429);
       expect(r.headers.get("retry-after")).toBe("1");
       expect(((await r.json()) as { message: string }).message).toMatch(/Too many attempts/);
+    } finally {
+      await new Promise((r) => s.close(r));
+      await a.close();
+      rmSync(d, { recursive: true, force: true });
+    }
+  });
+});
+
+describe("account delete", () => {
+  it("password re-checked; account, sessions, devices, user DB and backup copies gone; username free again", async () => {
+    const d = mkdtempSync(join(tmpdir(), "pa-e2e-account-"));
+    const backups = join(d, "backups");
+    const cfg = parseConfig({ users: ["alice", "dave"], auth: { signup: true }, backup: { dir: backups } });
+    const a = createApp({ dataDir: join(d, "data"), getConfig: () => cfg, version: "test", passwordAttemptIntervalMs: 0 });
+    const s = createServer((req, res) => void a.handleApi(req, res));
+    await new Promise<void>((r) => s.listen(0, "127.0.0.1", r));
+    const url = `http://127.0.0.1:${(s.address() as AddressInfo).port}`;
+    const signup = async (username: string) => {
+      const r = await fetch(`${url}/api/auth/signup`, { method: "POST", ...json({ username, password: "password1" }) });
+      return { cookie: cookieOf(r) };
+    };
+    const del = (cookie: string, body: unknown) => fetch(`${url}/api/account`, { method: "DELETE", ...json(body, { cookie }) });
+    try {
+      const alice = await signup("alice");
+      const dave = await signup("dave");
+      // Both users get a DB (export opens it); then a backup holds both.
+      for (const u of [alice, dave]) expect((await fetch(`${url}/api/export`, { headers: { cookie: u.cookie } })).status).toBe(200);
+      const snap = backupData(join(d, "data"), { dir: backups, keep: 3 }, Date.UTC(2026, 8, 1)).snapshot;
+      expect(readdirSync(join(backups, snap, "users")).sort()).toEqual(["1.db", "2.db"]);
+
+      expect((await del(dave.cookie, { password: "wrong-password" })).status).toBe(403);
+      expect((await fetch(`${url}/api/auth/me`, { headers: { cookie: dave.cookie } })).status).toBe(200); // still logged in
+      expect((await del(dave.cookie, {})).status).toBe(400);
+      const ok = await del(dave.cookie, { password: "password1" });
+      expect(ok.status).toBe(204);
+      expect(ok.headers.get("set-cookie")).toMatch(/pa_session=;.*Max-Age=0/);
+
+      expect((await fetch(`${url}/api/auth/me`, { headers: { cookie: dave.cookie } })).status).toBe(401);
+      expect(existsSync(join(d, "data", "users", "2.db"))).toBe(false);
+      expect(readdirSync(join(backups, snap, "users"))).toEqual(["1.db"]);
+      const login = await fetch(`${url}/api/auth/login`, { method: "POST", ...json({ username: "dave", password: "password1" }) });
+      expect(login.status).toBe(401);
+      // Other users untouched.
+      expect((await fetch(`${url}/api/auth/me`, { headers: { cookie: alice.cookie } })).status).toBe(200);
+      // Re-signup (SQLite may reuse id 2) = a fresh, working account.
+      const again = await signup("dave");
+      const ex = (await (await fetch(`${url}/api/export`, { headers: { cookie: again.cookie } })).json()) as UserExport;
+      expect(ex).toMatchObject({ username: "dave", transcripts: [], devices: [] });
     } finally {
       await new Promise((r) => s.close(r));
       await a.close();

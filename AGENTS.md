@@ -39,12 +39,12 @@ The repo has a few components:
 
 ## Project state
 - Server scaffold (settled): config loading/validation, `GET /api/health`, static/Vite serving, systemd scripts.
-- Server (built): SQLite store, web auth, device pairing + approval, transcript ingest/list/detail/delete, minimal web UI, LLM client + job queue, summaries (+ web view with job status), custom instructions + LLM meeting-type classify + per-user summary model (settings page), search v1 (FTS5 keyword + date/attendee filters + web page), nightly SQLite backups (`npm run backup` + systemd timer).
+- Server (built): SQLite store, web auth, device pairing + approval, transcript ingest/list/detail/delete, minimal web UI, LLM client + job queue, summaries (+ web view with job status), custom instructions + LLM meeting-type classify + per-user summary model (settings page), search v1 (FTS5 keyword + date/attendee filters + web page), nightly SQLite backups (`npm run backup` + systemd timer), speaker names (web), per-user export + account delete (incl. backups).
 - osx: `pa test-capture` spike runs on the Mac; Zoom tap + mic (no VP) record (verified live).
-- osx: meeting detection + calendar model (pure PACore) built, not wired (no EventKit/Core Audio wrappers yet).
+- osx: `pa run` daemon (detect → record → transcribe → upload) + `pa calendars` + `osx/install.sh` built 2026-09-30: PACore Linux-tested; `pa` wrappers (EventKit, Core Audio process list, libproc, capture, signals) **never compiled** → Mac session: mac-check `--only build`, `--only queue`, `--only daemon`.
 - osx: `pa pair` / `pa status` / `pa transcribe --upload` / `pa queue` / `pa run` (upload worker only) verified live on the Mac (2026-09-30 mac-check, server via ssh tunnel): pair (no Keychain dialog), re-pair reuses token, upload + replace, summary + search OK, outage → retry, revoke → halt → re-pair → resume, SIGTERM exit. 410 drop not exercised on the Mac (transcript wasn't deleted before the step; server + web delete re-verified live) → redo `--only queue`.
-- osx: `Package.resolved` created on the Mac, not yet in git (pins FluidAudio; should be committed).
-- Mac session 1 (roadmap 1–4) done 2026-09-30; capture/bench/transcribe results assumed OK (user decision, report not reviewed). **Next = daemon (8)** (remote access 8a done: LAN-only). Summary/search tuning waits for real transcripts.
+- osx: `osx/Package.resolved` pins FluidAudio 0.17.4. #24 had committed it at the repo root, where SwiftPM ignores it; moved 2026-10-01.
+- Mac session 1 (roadmap 1–4) done 2026-09-30; capture/bench/transcribe results assumed OK (user decision, report not reviewed). Daemon (8) code done, **next = Mac session 2** (verify 8) (remote access 8a done: LAN-only). Summary/search tuning waits for real transcripts.
 - Everything else below = planned, not built.
 - Default port **4200** (4000/4100 taken on the dev box by other services).
 - Monorepo: `server/` (Node backend), `web/` (React frontend), `shared/` (TS wire types), `osx/` (headless Swift CLI).
@@ -60,21 +60,21 @@ The repo has a few components:
 5. ~~**server: LLM client + job queue**~~ — done (see Server design → LLM / Background jobs).
 6. **server: summaries** — built: summarize job, rule + LLM classify, built-in + custom instructions (series > type > default), per-user model pick, settings page, long-transcript map-reduce. Series type reuse done. Left (low value, deferred): "instructions changed" stale flag; resume part notes after an outage (now restarts from scratch).
 7. **server: search** — v1 done (FTS5 keyword + date/attendee filters, see Server design → Search). Next v2: chunk+embed w/ `sqlite-vec`, hybrid merge, optional RAG answer — blocked on real transcripts (to judge retrieval) + an embedding model on the dev box. Pagination skipped: >50 hits → refine with filters.
-8. **osx: daemon (`pa run`)** — EventKit work calendars + meeting detection (pure logic done; left: EventKit + per-process mic-in-use + meeting-app wrappers, `pa calendars` to list names for `workCalendars`), auto capture → transcribe → upload queue (`pa run` = upload worker only so far; see osx Upload queue), raw-audio retention; `osx/install.sh` LaunchAgent; `os.Logger` + log file.
-9. **Speaker naming** — label speakers in web UI, per-user voice embeddings, match vs attendees; LLM name proposals never overwrite user labels.
+8. **osx: daemon (`pa run`)** — built, not yet compiled/run on the Mac (see osx Daemon). Left: Mac verification; then tune detection from the logs (which processes hold the mic; `ignoreMicApps` defaults?).
+9. **Speaker naming** — web labels per transcript built (attendees offered as suggestions; see Server design → Speaker names). Left: per-user voice embeddings (Mac/FluidAudio; needs real recordings), auto-match vs attendees, LLM name proposals (must never overwrite user labels).
 8a. **Remote access** — **LAN-only, built** (user decision 2026-09-30: no Tailscale on the work Mac; no public exposure because Cloudflare would see plaintext transcripts; app-layer encryption rejected because the web UI would leak them anyway). `https://assistant.riuna.com` = `~/src/webserver/nginx/conf.d/assistant.conf` → app bound to `172.17.0.1`. Details in `docs/remote-access.md`. Left: user removes the Cloudflare Tunnel route; restart to apply the bind; re-pair the Mac to the https URL. Off-LAN the Mac's uploads wait in the queue.
-10. **Ops/polish** — per-transcript delete done (see Transcript delete); per-user export/delete (must also purge user from backups), device list/revoke UI polish. Backups done (see Server design → Backups).
+10. **Ops/polish** — per-transcript delete, per-user export + account delete (purges backups), backups: done. Left: device list/revoke UI polish (unspecified).
 
 ## Commands
 - `npm run dev` (tsx watch + Vite middleware), `npm run build` (frontend → `dist/web`), `npm start`, `npm run backup`.
 - `npm test`, `npm run test:watch`, `npm run test:e2e`, `npm run typecheck`.
 - `./config-gen.sh`, `./install-service.sh`, `./start.sh [dev]`, `./stop.sh`, `./restart.sh`, `./rebuild.sh`.
-- osx: `swift build` / `swift test` in `osx/`; `osx/test-linux.sh` = PACore tests on the Linux dev box (Docker `swift:6.1`; `pa` target is macOS-only in the manifest); `osx/build.sh [identity]` → signed `osx/build/PA.app`; `osx/install.sh` (LaunchAgent, planned); `osx/pick-mic.sh` (numbered mic picker); `osx/bench-asr.sh [dir] [stamp]` (Mac: pinned `fluidaudiocli` ASR + offline diarization on a capture → `bench-<stamp>/summary.txt`); `osx/CHECKLIST.md` = first-Mac-run steps.
-- `osx/pa <cmd>` = run built `pa` from anywhere. TCC cmds (`test-capture`; add `run` once it records) via `open -W` (cwd `/` → `--out` made absolute; output → files streamed by `tail -f` so pipes/tee work live; Ctrl-C forwarded to our pid only; exit status always 0), rest = bare binary.
-- `osx/mac-check.sh [--from|--only STAGE] [--seconds N] [--server URL] [--account A] [--tunnel HOST]` = guided CHECKLIST run: stages `prereqs build capture bench transcribe pair upload queue`; pauses for human actions, y/n(+note)/skip for judgments (plays WAVs via `afplay`), greps pa output for the rest → `~/pa-test-capture/report-<stamp>{/,.tgz}`. `--tunnel` = own `ssh -L 4200` (control socket) → cuts it for the outage test. Greps exact pa strings (`still queued`, `stopped until re-paired`, `resumed`, `dropped`, `all zeros`, …): changing those messages → update the script.
+- osx: `swift build` / `swift test` in `osx/`; `osx/test-linux.sh` = PACore tests on the Linux dev box (Docker `swift:6.1`; `pa` target is macOS-only in the manifest); `osx/build.sh [identity]` → signed `osx/build/PA.app`; `osx/install.sh [--uninstall]` (LaunchAgent → `osx/build/PA.app` in place); `osx/pick-mic.sh` (numbered mic picker); `osx/bench-asr.sh [dir] [stamp]` (Mac: pinned `fluidaudiocli` ASR + offline diarization on a capture → `bench-<stamp>/summary.txt`); `osx/CHECKLIST.md` = first-Mac-run steps.
+- `osx/pa <cmd>` = run built `pa` from anywhere. TCC cmds (`test-capture`, `run` (not `--no-record`), `calendars`) via `open -W` (cwd `/` → `--out` made absolute; output → files streamed by `tail -f` so pipes/tee work live; Ctrl-C forwarded to our pid only; exit status always 0), rest = bare binary.
+- `osx/mac-check.sh [--from|--only STAGE] [--seconds N] [--server URL] [--account A] [--tunnel HOST]` = guided CHECKLIST run: stages `prereqs build capture bench transcribe pair upload queue daemon`; pauses for human actions, y/n(+note)/skip for judgments (plays WAVs via `afplay`), greps pa output for the rest → `~/pa-test-capture/report-<stamp>{/,.tgz}`. `--tunnel` = own `ssh -L 4200` (control socket) → cuts it for the outage test. Greps exact pa strings (`still queued`, `stopped until re-paired`, `resumed`, `dropped`, `all zeros`, …): changing those messages → update the script.
   - Server URL checked up front with the `parseServerURL` rule (bare `host:port` / LAN `http://` failed only at `pa pair`, first Mac run). Pair failure stops the run; upload/queue require `pa status` active. Change the rule → update `valid_server`.
-  - `pa run` stopped with SIGTERM, not INT: bash starts background jobs with SIGINT ignored (verified live).
-  - Both scripts only dry-run on Linux vs stubbed macOS tools + fake `pa`; not yet on the Mac.
+  - `pa run` stopped with SIGTERM, not INT: bash starts background jobs with SIGINT ignored (verified live). `queue` stage = bare `pa run --no-record` (upload only, no TCC). `daemon` stage = `osx/pa run` (TERM to wrapper → INT to pa); greps `recording … started`, `stopped (inactive)`, `segments queued for upload`, `pa run: stopped`, `meeting apps:`.
+  - `daemon` stage + `osx/install.sh`: syntax-checked only (no dry-run, no shellcheck on the box).
 
 ## Working practices
 - **AGENTS.md hygiene:** record settled decisions + their *why*; mark sections `(settled)` / `(planned, not built)`. Non-obvious fix → note the bug it prevents + "don't regress/simplify". Facts about external tools/APIs checked by running them → say "verified live"; don't trust docs alone.
@@ -88,6 +88,7 @@ The repo has a few components:
   - **Pure parse ⟂ impure I/O:** logic as pure functions (`parseX`, `buildPrompt`, `resolveInstructions`) unit-tested; thin `readX`/`fetchX` wrappers covered by e2e.
   - **TDD for new contracts** (API endpoints, wire types, job types): draft test → implement → run live, adjust test to real behavior → only then build UI.
   - Mutation-check key tests: break the code, confirm the test fails.
+  - Known: `llm.e2e` "live local LLM: embeddings" fails on the dev box (vLLM answers 404 on `/embeddings` but the `embedUp` probe says up); pre-existing, not a regression.
   - LLM tests: deterministic assertions (our parsing/plumbing) are the hard gate; model-quality checks are soft.
 - `npm run typecheck` must pass before PR; test files excluded from typecheck (Vitest runs them).
 - **Single source of truth:** shared types in `shared/`; one render/format function used everywhere (UI + logs) so they can't drift.
@@ -209,6 +210,17 @@ The repo has a few components:
   - Opens DBs without `migrate()`: a backup never changes schema.
   - ⚠️ Entry = `server/backup-main.ts`, not an `import.meta.url === argv[1]` guard: guard failed via symlinked path → silent no-op backup (verified live). Don't "simplify" back.
   - Verified live: scratch server running (WAL open), 3 runs, prune to keep=2; bad config.json → exit 1 (unit fails visibly). Units pass `systemd-analyze verify`.
+- **Speaker names (built, verified live in headless Chromium desktop + 390px):** per-user `speaker_names (transcript_id, label, name)` (user migration 7, FK cascade). `transcripts.data` never rewritten (= what the device sent).
+  - `PUT /api/transcripts/:id/speakers {names: {label: name|null}}` → `{speakerNames}`; partial; labels must occur in the transcript; trimmed, ≤100 chars, blank/null = remove. ⚠️ Control chars rejected: a newline in a name could forge `[m:ss] Speaker:` lines in the LLM prompt.
+  - Applied in: detail (`speakerNames` map; segments keep raw labels, web renders `displaySpeaker`), search hits (server-side), summarize job (`loadTranscript` → `applySpeakerNames`), export.
+  - A change bumps `transcripts.updated_at` to `max(updated_at+1, now)` (strictly newer even on the same clock) → summary `stale`; not auto re-summarized. Identical device re-upload keeps names. Re-transcribed upload may renumber labels → names can then be wrong (not detected).
+  - ⚠️ Lookups use `Object.hasOwn`: a label like `constructor` must not hit Object.prototype (mutation-checked).
+  - Not indexed for search (names only replace labels in hits).
+- **Account (built, verified live):** `GET /api/export` = `UserExport` JSON (`format: personal-assistant-export/1`) as attachment. `DELETE /api/account {password}` → 204 + cookie cleared: `Auth.confirmPassword` (same global throttle as login; wrong = 403, still logged in) → `account.ts deleteAccount`: users row (cascade sessions/devices/jobs) → `Store.deleteUserDb` (closes handle, rm db/wal/shm) → `purgeUserFromBackups(resolve(cwd, backup.dir))`.
+  - `Store` keeps an in-process set of deleted ids → `user()` throws, so a job/request in flight can't recreate the file; `Auth.signup` clears it (SQLite may reuse the max rowid for a new account).
+  - Backup purge: every snapshot + `.partial`: rm `users/<id>.db`, delete app.db row (FK on) then **VACUUM** (without it the password hash stays in free pages; mutation-checked).
+  - Not done: removing the username from config.json `users` (admin; logged). If it stays and signup is on, anyone can register that name (fresh, empty account). A backup running during the delete could still copy the file (rare; not handled).
+  - Tombstones go with the user DB: a still-paired Mac is revoked (device row gone → 401 → queue halts), so it can't re-upload.
 - **Search v2 (planned, not built):** hybrid — FTS5 + `sqlite-vec` (embeddings of ~1-min chunks) → merge/rerank → optional LLM answer citing chunks (RAG).
 - **Wire contract:** `shared/api.ts` is source of truth; Swift `Codable` mirrors it (`osx/Sources/PACore/Wire.swift`). JSON fixtures in `shared/fixtures/` decoded by Swift `WireTests`; `transcript-upload-pa.json` = byte-for-byte-semantic output of `pa transcribe`'s pure pipeline (Swift `PaUploadFixtureTests` builds it; server unit + `api.e2e` ingest/summarize/search it). nil keys are **omitted** (no `meeting`, no `speaker`), not null — server must keep treating missing = null; `api.e2e.test.ts` `expectFixtureShape` asserts real responses keep fixture keys + JSON types (mutation-checked both sides). New device-facing response → add fixture + both checks.
 
@@ -225,11 +237,11 @@ The repo has a few components:
   - **Sign with a stable self-signed code-signing cert** (Keychain Access → Certificate Assistant). Ad-hoc signing changes identity every build → TCC re-prompts/stale grants. No paid Apple dev account.
   - No hardened runtime (would need audio-input entitlement; no notarization anyway).
   - ⚠️ TCC attributes to the *responsible* process: bare `PA.app/Contents/MacOS/pa` from Terminal → grants go to Terminal. Launch via `open`/launchd. (Expected; confirm in spike.)
-- **CLI subcommands:** `pa pair <server> <account> [--name D]`, `pa status`, `pa upload <json>`, `pa transcribe` (spike, see Transcription), `pa run` (daemon; so far upload worker only), `pa queue` (list pending/failed uploads), `pa test-capture` (spike, below), `pa mics` / `pa set-mic (UID|--default)` (built).
+- **CLI subcommands:** `pa pair <server> <account> [--name D]`, `pa status`, `pa upload <json>`, `pa transcribe` (spike, see Transcription), `pa run [--no-record]` (daemon), `pa calendars`, `pa queue` (recordings not yet transcribed + pending/failed uploads), `pa test-capture` (spike, below), `pa mics` / `pa set-mic (UID|--default)` (built).
 - **Mic selection (built, device switch not verified live):** persisted as Core Audio device **UID** (stable; object ids aren't) in app-support `config.json` `micDeviceUID`; nil/unplugged → system default.
   - `pa mics` = TSV `uid\tname\tflags` (pure `formatMicLine`), parsed by bash-3.2 `osx/pick-mic.sh`. Bare binary OK: enumeration needs no TCC.
   - Applied via `kAudioOutputUnitProperty_CurrentDevice` on inputNode's unit; device read back and printed (ground truth).
-- **Autostart:** LaunchAgent `~/Library/LaunchAgents/<bundle id>.plist` (`RunAtLoad`, `KeepAlive`) running `PA.app/Contents/MacOS/pa run`; installed by `osx/install.sh`. **First run manually** so TCC prompts appear.
+- **Autostart (built, not run):** LaunchAgent `~/Library/LaunchAgents/<bundle id>.plist` (`RunAtLoad`, `KeepAlive`, `AssociatedBundleIdentifiers`, stdout/err → `~/Library/Logs/<bundle id>.log`) running `osx/build/PA.app/Contents/MacOS/pa run` in place; `osx/install.sh` = bootout + write + bootstrap. **Grant TCC first** via `osx/pa calendars` / `test-capture` / `run` (prompts need an interactive launch).
 - **Calendar:** EventKit (reads whatever accounts macOS Calendar syncs: Exchange/Google/iCloud). Config picks which calendars are "work". No direct Graph/Google API.
 - **Audio capture — two streams, kept separate** (no BlackHole/virtual driver):
   - **Headphones assumed → no echo handling at all** (user decision). Mic: plain `AVAudioEngine`, **no voice processing** — VP mic = all zeros on every live run, even without a tap (verified live); VP code removed, don't re-add.
@@ -244,13 +256,24 @@ The repo has a few components:
   - Aggregate clocked by default **output** device (where meeting plays), not the system/alert-sound device.
   - Tap = `CATapDescription` (global, no exclusions, `muteBehavior=.unmuted`, private) → private aggregate device (default output as main sub-device, tap auto-start) → IOProc block → `AVAudioFile`.
   - Denied system-audio permission = **silent buffers, no error** → summary flags all-zero streams. Don't drop this check.
-- **Meeting detection (PACore built, Linux-tested + mutation-checked; EventKit/Core Audio wrappers + `pa run` wiring not written yet):** `MeetingDetector.swift` `detectStep(state, input) → (state, [RecorderAction])`, pure, called every few s; actions `start(event?)` / `attach(event)` / `stop(session, reason)` / `discard(session)`.
+- **Meeting detection (PACore built, Linux-tested + mutation-checked; wired in `pa run`, not run on the Mac):** `MeetingDetector.swift` `detectStep(state, input) → (state, [RecorderAction])`, pure, called every few s; actions `start(event?)` / `attach(event)` / `stop(session, reason)` / `discard(session)`.
   - Inputs: `eligibleEvents` (work calendars), `micInUse`, `meetingAppRunning` (Zoom/Teams/Webex/browser), `now`.
   - ⚠️ `micInUse` must exclude pa's own process (per-process `kAudioProcessPropertyIsRunningInput`, not `…DeviceIsRunningSomewhere`): our capture would keep every recording alive forever.
   - Window = [start − 5 min, end + 10 min) (user decision). Start: mic → core event (latest start) > upcoming (pre-roll) > ad-hoc; app alone → only events with attendees not already recorded ("Focus time" + Zoom open all day ≠ call). Never links to an already-ended event (call right after = ad-hoc).
   - Activity = mic, or app-in-window until the mic was first seen (then mic only: Zoom left open ≠ still in call). Stop after 2 min inactive (dropouts don't split); <60 s active → `discard`. Overrun keeps recording while mic in use.
   - Back-to-back: split exactly at next event's start (stop before start, same step); overlapping events don't split a running one. Ad-hoc call that reaches an event's window → `attach` (relabel), no split. Finished event: app won't restart it; mic (rejoin) does, linked again.
   - Session event snapshot refreshed each step (moved/extended events).
+- **Daemon `pa run` (built; PACore Linux-tested + mutation-checked; `pa/` wrappers never compiled):**
+  - `pa/Run.swift`: upload worker task + recording task (lock → `recoverInterrupted` → transcribe loop + record loop). Non-Sendable state (EventKit, controller, recorders) local to one task, never shared.
+  - Record loop every 5 s: `micUsers` (Core Audio process objects `IsRunningInput`, own pid excluded, `ignoreMicApps`) + `runningMeetingApps` (libproc exe paths → outermost `.app` in `defaultMeetingApps`, incl. browsers; NSWorkspace avoided: needs a run loop) → `detectStep` via PACore `RecordingController`. Calendar + config re-read every 60 s (broken config → keep previous). Signals + calendar state logged on change only.
+  - EventKit (`pa/Calendars.swift`): access requested only if `workCalendars` set (cached; grant later → restart); events overlapping [now−12h, now+1h]; `isRecurring = hasRecurrenceRules || isDetached`; rooms/resources dropped (`mapParticipants`); organizer = self → `selfStatus` nil.
+  - `PACore/Recordings.swift`: `recordings/<id>-{mic,system}.wav` + sidecar `<id>.json` (`RecordingMeta`) written at **start** (crash-safe). id = upload id (not a stamp: back-to-back split can start two in one second).
+  - Capture = `CaptureRecorder` (mic then tap, same order as test-capture); one stream failing = keep the other; stop → `streamWarnings` (all-zero / no audio / write error) logged.
+  - `RecordingProcessor`: finished sidecars oldest first → transcribe (models loaded per recording, released after) → 0 segments = not uploaded → `enqueue` + `worker.kick()` → delete audio (or `keepAudioDays` → `recordings/kept/`, pruned by mtime). ⚠️ `attempts` saved **before** transcribing: a crash in ASR can't crash-loop under `KeepAlive`; 3 attempts → parked (kept, `pa queue` shows `failed`). Retries: per finished recording + every 10 min.
+  - ⚠️ Single instance: `flock` on app-support `run.lock`, taken **before** `recoverInterrupted` (else it would mark the other process's live recording ended). Second `pa run` waits (polls 5 s). `--no-record` takes no lock (double upload = harmless).
+  - SIGTERM/SIGINT: DispatchSource (signal ignored first) cancels the record task → `controller.shutdown` (≥ minActive kept, else discarded) → WAVs closed → exit 0 without waiting for a transcription (restarts from sidecar). Default SIGTERM would leave WAV headers unfinalized.
+  - Logging: `daemonLog` = stdout (launchd → log file) + `os.Logger` (`.public`).
+  - Known limits: WAV = float32 48 kHz stereo ≈ 1.4 GB/h for the tap (+ mic), 4 GB WAV cap ≈ 2.9 h; file I/O still in the capture callbacks (spike-grade `WavWriter`).
 - **Calendar model (built, pure):** `Calendar.swift` `CalendarEvent` (EKEvent mirror) → `meetingMeta`. `eventId` = externalId, recurring → `externalId@<occurrenceDate ISO>` (EKEvent ids are shared by occurrences; occurrenceDate survives a moved occurrence); `seriesId` = externalId (recurring only) → server series instructions/type reuse.
   - Work calendars: Mac `config.json` `workCalendars` = names or `Source/Name`, case-insensitive (Exchange + iCloud both default to "Calendar"). nil/empty = none → all recordings ad-hoc (personal event titles never uploaded by accident). Excluded: all-day, cancelled, declined, zero-length; tentative/pending kept.
   - `emailFromParticipantURL`: `mailto:` only (Exchange X.500 paths → nil).
@@ -266,7 +289,7 @@ The repo has a few components:
   - `findCaptures` pairs `pa-<yyyyMMdd-HHmmss>-{system,mic}.wav`; stamp = Mac local time. `makeTranscriptUpload` → UTC ISO, lowercase id.
   - Fallback/alt: Apple `SpeechAnalyzer`/`SpeechTranscriber` (macOS 26); WhisperKit if accuracy on a language demands it.
 - **Speaker ID:** FluidAudio diarization on system stream → clusters. Naming: per-user voice embeddings of known speakers (labeled in web UI), matched against calendar attendees; unknown → `Speaker N`. Server-side LLM may propose names from context; never overwrite a user label.
-- **Storage/queue:** audio + pending uploads in `~/Library/Application Support/<bundle id>/`. Raw audio deleted after successful upload (configurable retention, planned).
+- **Storage/queue:** audio + pending uploads in `~/Library/Application Support/<bundle id>/`. Raw audio deleted once the transcript is in the upload queue (queue persists first); `keepAudioDays` retention built.
 - **Upload queue (PACore built, Linux-tested + mutation-checked; `pa/Run.swift` + `Server.swift` verified live on Linux vs scratch server with file-backed Keychain/config stubs, not yet on the Mac):** `UploadQueue.swift` actor, sender injected; `pa/Run.swift` passes URLSession + server/token read **per send** (`pa pair` in another process applies without restart; unpaired → 401-shaped error → halt).
   - One atomic JSON file per upload `<dir>/<id>.json` (`QueuedUpload`: upload + revision + attempts + nextAttemptAt + lastError). `enqueue` persists before returning → caller may then delete audio. Id must be a UUID (it's a file name); same id = replace + un-park.
   - `classifyUploadFailure`: network/5xx/403 (pending approval)/408/409/425/429 = retry; **410 = drop** (server tombstone, never retry); **401 = halt** (whole queue, in memory; `resume()` after re-pair; restart probes once); other 4xx = park in `failed/` (data kept, not retried). Unreadable queue file → `failed/`.
@@ -282,5 +305,5 @@ The repo has a few components:
   - Swift encoder omits nil keys; server treats missing = null (verified live).
 - **Secrets:** bearer token in Keychain (generic password, service = bundle id, account `device-token`); non-secret settings (server URL, work calendars, retention) in `~/Library/Application Support/<bundle id>/config.json`.
 - Networking: `URLSession`, HTTPS only (except localhost).
-- Logging: `os.Logger` (subsystem = bundle id) + log file in `~/Library/Logs/`.
+- Logging: `os.Logger` (subsystem = bundle id) + log file in `~/Library/Logs/` (built: `daemonLog`).
 - Tests: Swift Testing (`swift test`); decode `shared/fixtures/` JSON.

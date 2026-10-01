@@ -753,3 +753,25 @@ details .editor {
     padding: 16px;
   }
 }
+
+/* Speaker names editor (transcript page): collapsed by default, rises like a card. */
+.speakers {
+  background: var(--panel);
+  border-radius: var(--r-lg);
+  padding: 8px 12px;
+  margin: 16px 0;
+}
+
+.speakers summary {
+  cursor: pointer;
+  color: var(--muted);
+}
+
+.speakers form {
+  margin-top: 8px;
+}
+
+.speaker-label {
+  min-width: 8em;
+  color: var(--muted);
+}

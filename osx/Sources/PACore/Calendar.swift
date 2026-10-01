@@ -81,3 +81,43 @@ public func meetingMeta(_ e: CalendarEvent) -> MeetingMeta {
         calendarName: e.calendarName, eventId: e.eventId, seriesId: e.seriesId, title: e.title,
         start: isoTimestamp(e.start), end: isoTimestamp(e.end), organizer: e.organizer, attendees: e.attendees)
 }
+
+/// EKParticipant mirror (`pa` maps the EventKit enums to these).
+public struct ParticipantInfo: Equatable, Sendable {
+    public enum Kind: Equatable, Sendable { case person, room, resource, group, unknown }
+
+    public var name: String?
+    public var url: String
+    public var status: ParticipationStatus
+    public var kind: Kind
+    public var isCurrentUser: Bool
+
+    public init(name: String?, url: String, status: ParticipationStatus = .unknown, kind: Kind = .person, isCurrentUser: Bool = false) {
+        self.name = name
+        self.url = url
+        self.status = status
+        self.kind = kind
+        self.isCurrentUser = isCurrentUser
+    }
+}
+
+public func participantPerson(_ p: ParticipantInfo) -> Person? {
+    let name = p.name?.trimmingCharacters(in: .whitespacesAndNewlines)
+    let person = Person(name: name?.isEmpty == false ? name : nil, email: emailFromParticipantURL(p.url))
+    return person.name == nil && person.email == nil ? nil : person
+}
+
+/// → (user's own response, attendees). Rooms/resources aren't people (room name ≠ attendee); declined attendees
+/// still listed (invite list = who the meeting was for).
+public func mapParticipants(_ ps: [ParticipantInfo]) -> (selfStatus: ParticipationStatus?, attendees: [Person]) {
+    let me = ps.first(where: \.isCurrentUser)?.status
+    let people = ps.filter { $0.kind == .person || $0.kind == .unknown }.compactMap(participantPerson)
+    return (me, people)
+}
+
+/// `pa calendars` line: `Source/Name<TAB>work|-` (the first field is what `workCalendars` accepts). Tabs/newlines → space.
+public func formatCalendarLine(name: String, source: String?, workCalendars: [String]) -> String {
+    let clean = { (s: String) in String(s.map { $0 == "\t" || $0.isNewline ? " " : $0 }) }
+    let id = source.map { "\(clean($0))/\(clean(name))" } ?? clean(name)
+    return "\(id)\t\(isWorkCalendar(name: name, source: source, workCalendars: workCalendars) ? "work" : "-")"
+}

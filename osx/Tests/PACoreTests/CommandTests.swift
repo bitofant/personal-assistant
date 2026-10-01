@@ -50,9 +50,13 @@ import Testing
         #expect(throws: UsageError.self) { try parseCommand(["status", "x"]) }
         #expect(try parseCommand(["upload", "t.json"]) == .upload("t.json"))
         #expect(throws: UsageError.self) { try parseCommand(["upload"]) }
-        #expect(try parseCommand(["run"]) == .run)
+        #expect(try parseCommand(["run"]) == .run(record: true))
+        #expect(try parseCommand(["run", "--no-record"]) == .run(record: false))
         #expect(try parseCommand(["queue"]) == .queue)
+        #expect(try parseCommand(["calendars"]) == .calendars)
         #expect(throws: UsageError.self) { try parseCommand(["run", "x"]) }
+        #expect(throws: UsageError.self) { try parseCommand(["run", "--no-record", "x"]) }
+        #expect(throws: UsageError.self) { try parseCommand(["calendars", "x"]) }
     }
 
     @Test func rejectsBadInput() {

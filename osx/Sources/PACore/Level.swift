@@ -38,3 +38,16 @@ public func formatLevel(label: String, meter: LevelMeter, seconds: Double?) -> S
     let warn = meter.isAllZeros ? "  ⚠️ all zeros (permission denied, or nothing playing?)" : ""
     return "\(label): \(dur), peak \(fmt(dbfs(meter.peakOrNil))), rms \(fmt(dbfs(meter.rms)))\(warn)"
 }
+
+/// Problems with one recorded stream (`pa run` log). All-zero = permission missing far more often than true
+/// silence (digital zero is rare even in a quiet room) → always warned.
+public func streamWarnings(label: String, meter: LevelMeter, seconds: Double?, writeError: String?) -> [String] {
+    var w: [String] = []
+    if let writeError { w.append("\(label): write error: \(writeError)") }
+    if seconds == nil {
+        w.append("\(label): no audio captured")
+    } else if meter.isAllZeros {
+        w.append(formatLevel(label: label, meter: meter, seconds: seconds))
+    }
+    return w
+}

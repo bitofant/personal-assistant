@@ -22,8 +22,10 @@ struct PA {
                 try await upload(path)
             case .transcribe(let options):
                 try await transcribe(options)
-            case .run:
-                try await run()
+            case .run(let record):
+                try await run(record: record)
+            case .calendars:
+                try await listCalendars()
             case .queue:
                 try listQueue()
             }

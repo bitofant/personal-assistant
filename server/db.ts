@@ -1,5 +1,5 @@
 import Database from "better-sqlite3";
-import { mkdirSync } from "node:fs";
+import { mkdirSync, rmSync } from "node:fs";
 import { join } from "node:path";
 
 export type Db = Database.Database;
@@ -178,6 +178,16 @@ export const USER_MIGRATIONS = [
     deleted_at INTEGER NOT NULL
   );
   `,
+  // User-given names for diarization labels, per transcript. Kept apart from transcripts.data (= what the device sent).
+  `
+  CREATE TABLE speaker_names (
+    transcript_id TEXT NOT NULL REFERENCES transcripts(id) ON DELETE CASCADE,
+    label TEXT NOT NULL,
+    name TEXT NOT NULL,
+    updated_at INTEGER NOT NULL,
+    PRIMARY KEY (transcript_id, label)
+  );
+  `,
 ] as const;
 
 // Part of shipped migration 4 (append-only): changing what's indexed = new migration that drops + rebuilds.
@@ -202,6 +212,8 @@ function indexTranscriptSql(t: string, from: string): string {
 export class Store {
   readonly app: Db;
   private readonly userDbs = new Map<number, Db>();
+  /** Deleted accounts: a job/request in flight must not recreate their DB file. */
+  private readonly deleted = new Set<number>();
 
   constructor(private readonly dataDir: string) {
     mkdirSync(join(dataDir, "users"), { recursive: true });
@@ -211,12 +223,27 @@ export class Store {
   user(userId: number): Db {
     // Integer id only: the path is never built from user input.
     if (!Number.isSafeInteger(userId) || userId < 1) throw new Error(`bad user id ${userId}`);
+    if (this.deleted.has(userId)) throw new Error(`user ${userId} was deleted`);
     let db = this.userDbs.get(userId);
     if (!db) {
       db = openDb(join(this.dataDir, "users", `${userId}.db`), USER_MIGRATIONS);
       this.userDbs.set(userId, db);
     }
     return db;
+  }
+
+  /** Closes + deletes the user's DB file (and WAL/SHM). Caller deletes the app.db row. */
+  deleteUserDb(userId: number): void {
+    this.deleted.add(userId);
+    this.userDbs.get(userId)?.close();
+    this.userDbs.delete(userId);
+    const base = join(this.dataDir, "users", `${userId}.db`);
+    for (const f of [base, `${base}-wal`, `${base}-shm`]) rmSync(f, { force: true });
+  }
+
+  /** SQLite may hand a deleted account's id to a new signup (rowid reuse): fresh account, fresh DB. */
+  userCreated(userId: number): void {
+    this.deleted.delete(userId);
   }
 
   close(): void {

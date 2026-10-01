@@ -209,8 +209,8 @@ export function deleteTranscript(db: Db, id: string, now: number): boolean {
   })();
 }
 
-// Summary fields live elsewhere (summaries table, app.db jobs); app.ts joins them.
-export function getTranscript(db: Db, id: string, deviceNames: Map<string, string>): Omit<TranscriptDetail, "summary" | "summaryJob"> | null {
+// Summary + speaker names live elsewhere (summaries/speaker_names tables, app.db jobs); app.ts joins them.
+export function getTranscript(db: Db, id: string, deviceNames: Map<string, string>): Omit<TranscriptDetail, "summary" | "summaryJob" | "speakerNames"> | null {
   const r = db.prepare("SELECT * FROM transcripts WHERE id = ?").get(id.toLowerCase()) as Row | undefined;
   if (!r) return null;
   return {

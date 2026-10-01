@@ -13,8 +13,10 @@ public enum Command: Equatable, Sendable {
     /// Path to a `TranscriptUpload` JSON file.
     case upload(String)
     case transcribe(TranscribeOptions)
-    /// Daemon. For now: upload queue worker only (calendar/capture planned).
-    case run
+    /// Daemon: detect meetings → record → transcribe → upload queue. record=false: upload worker only.
+    case run(record: Bool)
+    /// List calendars (`Source/Name`, work or not).
+    case calendars
     /// List pending + failed uploads.
     case queue
 }
@@ -62,10 +64,13 @@ public let usage = """
           Show pairing state (asks the server).
       pa upload <transcript.json>
           Upload a TranscriptUpload JSON file (shared/api.ts) to the paired server.
-      pa run
-          Daemon (LaunchAgent). For now only uploads the queue: retries with backoff, pauses on 401 until re-paired.
+      pa run [--no-record]
+          Daemon (LaunchAgent): records meetings (work calendar + mic/meeting-app detection), transcribes, uploads.
+          Upload queue retries with backoff, pauses on 401 until re-paired. --no-record: upload worker only.
+      pa calendars
+          List calendars as Source/Name<TAB>work|- ; put names in "workCalendars" in config.json.
       pa queue
-          List queued uploads (pending, failed/) in ~/Library/Application Support/com.bitofant.pa/upload-queue.
+          List recordings not yet transcribed + queued uploads (pending, failed/).
       pa transcribe [DIR] [--stamp yyyyMMdd-HHmmss] [--me NAME] [--no-diarize] [--upload]
           Transcribe a test-capture recording (mic = you, system = diarized) → DIR/pa-<stamp>-transcript.json.
           Default: newest recording in ~/pa-test-capture; --me defaults to your macOS full name.
@@ -126,9 +131,15 @@ public func parseCommand(_ args: [String]) throws(UsageError) -> Command {
     case "status":
         guard args.count == 1 else { throw UsageError("status takes no arguments") }
         return .status
-    case "run", "queue":
+    case "run":
+        switch Array(args.dropFirst()) {
+        case []: return .run(record: true)
+        case ["--no-record"]: return .run(record: false)
+        default: throw UsageError("run takes only --no-record")
+        }
+    case "queue", "calendars":
         guard args.count == 1 else { throw UsageError("\(sub) takes no arguments") }
-        return sub == "run" ? .run : .queue
+        return sub == "queue" ? .queue : .calendars
     case "upload":
         guard args.count == 2, !args[1].isEmpty else { throw UsageError("upload needs a transcript JSON file") }
         return .upload(args[1])

@@ -7,6 +7,7 @@ import { isRetryable, type JobHandler } from "./jobs.js";
 import { MIN_CONTEXT_TOKENS } from "./config.js";
 import { LlmError, type ChatMessage, type ChatResult, type Llm } from "./llm.js";
 import { getSummaryLlm, toRouteRef } from "./settings.js";
+import { applySpeakerNames, getSpeakerNames } from "./speakers.js";
 
 export const SUMMARIZE_JOB = "summarize";
 
@@ -451,9 +452,10 @@ export function seriesMeetingType(db: Db, seriesId: string | null, excludeTransc
   return r?.meeting_type ?? null;
 }
 
+/** Speaker names applied: the LLM sees "Bob", not "Speaker 2" (renaming bumps updated_at → summary stale). */
 function loadTranscript(db: Db, id: string): { upload: TranscriptUpload; updatedAt: number } | null {
   const r = db.prepare("SELECT data, updated_at FROM transcripts WHERE id = ?").get(id) as { data: string; updated_at: number } | undefined;
-  return r ? { upload: JSON.parse(r.data) as TranscriptUpload, updatedAt: r.updated_at } : null;
+  return r ? { upload: applySpeakerNames(JSON.parse(r.data) as TranscriptUpload, getSpeakerNames(db, id)), updatedAt: r.updated_at } : null;
 }
 
 // ---- job ----

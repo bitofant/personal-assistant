@@ -13,25 +13,36 @@ public struct AgentConfig: Codable, Equatable, Sendable {
     /// Calendars whose events drive/label recordings: `Name` or `Source/Name`. nil = none → every recording is ad-hoc
     /// (personal event titles/attendees never reach the server by accident).
     public var workCalendars: [String]?
+    /// Bundle ids whose mic use never means "in a call" (e.g. an always-listening service). nil = none.
+    public var ignoreMicApps: [String]?
+    /// Days to keep a recording's audio after its transcript is queued; nil = delete right away.
+    public var keepAudioDays: Int?
 
     public init(
         micDeviceUID: String? = nil, serverURL: String? = nil, account: String? = nil, deviceId: String? = nil,
-        workCalendars: [String]? = nil
+        workCalendars: [String]? = nil, ignoreMicApps: [String]? = nil, keepAudioDays: Int? = nil
     ) {
         self.micDeviceUID = micDeviceUID
         self.serverURL = serverURL
         self.account = account
         self.deviceId = deviceId
         self.workCalendars = workCalendars
+        self.ignoreMicApps = ignoreMicApps
+        self.keepAudioDays = keepAudioDays
     }
 }
 
-/// Normalizes at the boundary: blank UID → nil; work calendars trimmed, blanks dropped, empty → nil.
+/// Normalizes at the boundary: blank UID → nil; lists trimmed, blanks dropped, empty → nil; keepAudioDays ≤ 0 → nil.
 public func parseAgentConfig(_ data: Data) throws -> AgentConfig {
     var c = try JSONDecoder().decode(AgentConfig.self, from: data)
     if c.micDeviceUID?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == true { c.micDeviceUID = nil }
-    let cals = (c.workCalendars ?? []).map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }.filter { !$0.isEmpty }
-    c.workCalendars = cals.isEmpty ? nil : cals
+    func list(_ l: [String]?) -> [String]? {
+        let t = (l ?? []).map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }.filter { !$0.isEmpty }
+        return t.isEmpty ? nil : t
+    }
+    c.workCalendars = list(c.workCalendars)
+    c.ignoreMicApps = list(c.ignoreMicApps)
+    if let d = c.keepAudioDays, d <= 0 { c.keepAudioDays = nil }
     return c
 }
 

@@ -9,9 +9,10 @@ app="$here/build/PA.app"
 bin="$app/Contents/MacOS/pa"
 [ -x "$bin" ] || { echo "No $bin — run osx/build.sh first." >&2; exit 1; }
 
-# Add `run` once it records/reads the calendar (today it only uploads → bare is fine).
-case "${1:-}" in
-  test-capture) ;;
+# `run --no-record` only uploads → bare is fine.
+case "${1:-} ${2:-}" in
+  "run --no-record"*) exec "$bin" "$@" ;;
+  test-capture*|run*|calendars*) ;;
   *) exec "$bin" "$@" ;;
 esac
 

@@ -183,11 +183,21 @@ export function searchTranscripts(db: Db, req: SearchRequest, deviceNames: Map<s
   const highlight = db.prepare(
     `SELECT highlight(search_fts, 2, '${OPEN}', '${CLOSE}') AS h FROM search_fts WHERE search_fts MATCH ? AND rowid = CAST(? AS INTEGER)`,
   );
+  // User-given speaker names, shown instead of diarization labels (same as the transcript page).
+  const names = new Map(
+    (ids.length
+      ? (db
+          .prepare("SELECT transcript_id, label, name FROM speaker_names WHERE transcript_id IN (SELECT value FROM json_each(?))")
+          .all(JSON.stringify(ids)) as { transcript_id: string; label: string; name: string }[])
+      : []
+    ).map((r) => [`${r.transcript_id}\0${r.label}`, r.name]),
+  );
   const segsByTranscript = new Map<string, SearchSegmentHit[]>();
   for (const s of segRows) {
     const h = (highlight.get(any, s.rid) as { h: string } | undefined)?.h ?? "";
     const list = segsByTranscript.get(s.transcript_id) ?? [];
-    list.push({ index: s.seg, start: s.start, speaker: s.speaker, parts: splitHighlight(h) });
+    const speaker = s.speaker === null ? null : (names.get(`${s.transcript_id}\0${s.speaker}`) ?? s.speaker);
+    list.push({ index: s.seg, start: s.start, speaker, parts: splitHighlight(h) });
     segsByTranscript.set(s.transcript_id, list);
   }
 
