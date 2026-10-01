@@ -7,7 +7,7 @@ import { listInstructions } from "./instructions.js";
 import { getSummaryLlm } from "./settings.js";
 import { getSpeakerNames } from "./speakers.js";
 import { getSummary } from "./summaries.js";
-import { getTranscript, listTranscripts } from "./transcripts.js";
+import { deviceUploadStats, getTranscript, listTranscripts } from "./transcripts.js";
 
 // Per-user export + delete. Per-user DB file = export/delete by construction; app.db holds only account, sessions,
 // devices, jobs (FK-cascaded from users).
@@ -28,7 +28,7 @@ export function exportUser(store: Store, devices: Devices, user: User, now: numb
     transcripts,
     instructions: listInstructions(db),
     settings: { summaryLlm: getSummaryLlm(db) },
-    devices: devices.list(user),
+    devices: devices.list(user, deviceUploadStats(db)),
   };
 }
 

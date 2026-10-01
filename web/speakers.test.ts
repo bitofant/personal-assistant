@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { displaySpeaker, nameSuggestions, speakerEdits, speakerLabels } from "./speakers.js";
+import { displaySpeaker, nameSuggestions, speakerEdits, speakerLabels, suggestionFor, suggestJobView } from "./speakers.js";
 
 const seg = (speaker: string | null) => ({ start: 0, end: 1, speaker, text: "x" });
 
@@ -29,5 +29,27 @@ describe("speaker helpers", () => {
     const names = { "Speaker 1": "Bob" };
     expect(speakerEdits(names, { "Speaker 1": " Bob ", "Speaker 2": "" })).toEqual({});
     expect(speakerEdits(names, { "Speaker 1": "", "Speaker 2": " Carol " })).toEqual({ "Speaker 1": null, "Speaker 2": "Carol" });
+  });
+});
+
+describe("speaker suggestions (web)", () => {
+  const sugg = { "Speaker 1": { name: "Bob", evidence: "hi Bob" } };
+  it("suggestionFor: only unnamed labels, hidden once typed", () => {
+    expect(suggestionFor("Speaker 1", {}, "", sugg)).toEqual(sugg["Speaker 1"]);
+    expect(suggestionFor("Speaker 1", {}, " Bob ", sugg)).toBeNull();
+    expect(suggestionFor("Speaker 1", { "Speaker 1": "Carol" }, "Carol", sugg)).toBeNull(); // user label wins
+    expect(suggestionFor("Speaker 2", {}, "", sugg)).toBeNull();
+    expect(suggestionFor("constructor", {}, "", sugg)).toBeNull();
+  });
+
+  it("suggestJobView: progress, backoff, failure, empty result", () => {
+    const job = (status: "queued" | "running" | "done" | "failed", lastError: string | null = null) => ({ status, attempts: 1, lastError, nextAttemptAt: status === "queued" ? "2026-10-01T10:00:00.000Z" : null });
+    expect(suggestJobView(null, 0)).toMatchObject({ message: null, inProgress: false, pollMs: null });
+    expect(suggestJobView(job("queued"), 0)).toMatchObject({ inProgress: true, pollMs: 2000 });
+    expect(suggestJobView(job("running"), 0)).toMatchObject({ inProgress: true, pollMs: 2000 });
+    expect(suggestJobView(job("queued", "LLM down"), 0, "UTC")).toMatchObject({ tone: "warn", inProgress: true, pollMs: 15000, message: expect.stringContaining("LLM down") });
+    expect(suggestJobView(job("failed", "boom"), 0)).toMatchObject({ tone: "error", inProgress: false, message: expect.stringContaining("boom") });
+    expect(suggestJobView(job("done"), 0).message).toMatch(/No names found/);
+    expect(suggestJobView(job("done"), 2).message).toBeNull();
   });
 });

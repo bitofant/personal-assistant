@@ -73,9 +73,19 @@ export interface DeviceInfo {
   status: DeviceStatus;
   createdAt: string;
   approvedAt: string | null;
+  /** Any device API call (incl. status polls). */
   lastUsedAt: string | null;
+  /** Last transcript upload; older devices: newest transcript received from it. null = none. */
+  lastUploadAt: string | null;
+  /** Transcripts in this account last uploaded by this device. */
+  transcriptCount: number;
   /** Pending only. */
   expiresAt: string | null;
+}
+
+/** PATCH /api/devices/:id (web) → 200 DeviceInfo. Trimmed, 1–100 chars, no control characters. Shown on the Mac by `pa status`. */
+export interface RenameDeviceRequest {
+  name: string;
 }
 
 export interface DeviceListResponse {
@@ -179,6 +189,24 @@ export interface SpeakerNamesResponse {
   speakerNames: Record<string, string>;
 }
 
+/** LLM-proposed name for a speaker label. Never applied by the server: the user accepts it via PUT …/speakers. */
+export interface SpeakerSuggestion {
+  name: string;
+  /** Cue from the transcript (short quote); null if the model gave none. */
+  evidence: string | null;
+}
+
+/**
+ * GET /api/transcripts/:id/speakers/suggestions (web); POST same path (JSON body, may be `{}`) → 202, (re)queues the
+ * LLM job. Only labels without a user-given name are listed. Cleared when the device uploads changed content.
+ */
+export interface SpeakerSuggestionsResponse {
+  /** label → suggestion. */
+  suggestions: Record<string, SpeakerSuggestion>;
+  /** null = never requested. */
+  job: JobState | null;
+}
+
 // ---- Search ----
 
 /**
@@ -238,8 +266,10 @@ export interface TranscriptSummary {
   provider: string;
   model: string;
   createdAt: string;
-  /** Transcript was re-uploaded after this summary was made. */
+  /** Transcript was re-uploaded (or speakers renamed) after this summary was made. */
   stale: boolean;
+  /** The instructions that now apply to this meeting (same type + series) differ from the ones used. */
+  instructionsChanged: boolean;
   /** 1 = whole transcript in one LLM call; >1 = too long for the model, summarized in parts then combined; null = unknown (older summary). */
   parts: number | null;
 }

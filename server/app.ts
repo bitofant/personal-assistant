@@ -1,5 +1,6 @@
 import type { IncomingMessage, ServerResponse } from "node:http";
 import type {
+  DeviceInfo,
   DeviceListResponse,
   HealthResponse,
   InstructionsResponse,
@@ -9,6 +10,7 @@ import type {
   SettingsResponse,
   SignupResponse,
   SpeakerNamesResponse,
+  SpeakerSuggestionsResponse,
   AuthOptionsResponse,
   SummarizeResponse,
   TranscriptDetail,
@@ -28,9 +30,10 @@ import { createLlm, routeChoices, type Llm } from "./llm.js";
 import { parseSearchRequest, searchTranscripts } from "./search.js";
 import { effectiveChoice, getSummaryLlm, parseRouteChoice, setSummaryLlm } from "./settings.js";
 import { getSpeakerNames, parseSpeakerNames, setSpeakerNames, speakerLabels } from "./speakers.js";
+import { clearSpeakerSuggestions, getSpeakerSuggestions, SUGGEST_SPEAKERS_JOB, suggestSpeakersHandler } from "./speakerSuggestions.js";
 import { getSummary, SUMMARIZE_JOB, summarizeHandler, type SummarizePayload } from "./summaries.js";
 import { bearerToken, HttpError, isRecord, readJson, sendError, sendJson, sendNoContent } from "./http.js";
-import { deleteTranscript, getTranscript, transcriptExists, listTranscripts, MAX_TRANSCRIPT_BYTES, parseTranscriptUpload, upsertTranscript } from "./transcripts.js";
+import { deleteTranscript, deviceUploadStats, getTranscript, transcriptExists, listTranscripts, MAX_TRANSCRIPT_BYTES, parseTranscriptUpload, upsertTranscript } from "./transcripts.js";
 
 export interface AppOptions {
   dataDir: string;
@@ -76,7 +79,7 @@ export interface App {
 }
 
 function defaultJobHandlers(deps: JobDeps): Record<string, JobHandler> {
-  return { [SUMMARIZE_JOB]: summarizeHandler(deps) };
+  return { [SUMMARIZE_JOB]: summarizeHandler(deps), [SUGGEST_SPEAKERS_JOB]: suggestSpeakersHandler(deps) };
 }
 
 export function createApp(opts: AppOptions): App {
@@ -124,7 +127,13 @@ export function createApp(opts: AppOptions): App {
 
   // ---- devices (web side) ----
   route("GET", "/api/devices", ({ req, res }) => {
-    sendJson(res, { devices: devices.list(auth.requireUser(req)) } satisfies DeviceListResponse);
+    const user = auth.requireUser(req);
+    sendJson(res, { devices: devices.list(user, deviceUploadStats(store.user(user.id))) } satisfies DeviceListResponse);
+  });
+  route("PATCH", "/api/devices/:id", async ({ req, res, params }) => {
+    const user = auth.requireUser(req);
+    const { value } = await readJson(req); // content-type check = CSRF guard
+    sendJson(res, devices.rename(user, params[0], value, deviceUploadStats(store.user(user.id))) satisfies DeviceInfo);
   });
   route("POST", "/api/devices/pair", async ({ req, res }) => {
     sendJson(res, devices.pair(bearerToken(req), (await readJson(req)).value), 202);
@@ -145,6 +154,9 @@ export function createApp(opts: AppOptions): App {
     const device = devices.requireActive(req);
     const { raw, value } = await readJson(req, MAX_TRANSCRIPT_BYTES);
     const { changed, ...result } = upsertTranscript(store.user(device.userId), device.id, parseTranscriptUpload(value), raw, now());
+    devices.recordUpload(device.id);
+    // New content may renumber diarization labels → old suggestions could point at the wrong voice.
+    if (changed) clearSpeakerSuggestions(store.user(device.userId), result.id);
     // Unchanged re-upload: keep existing summary/job; but backfill if it was never queued.
     if (changed || !jobs.find(device.userId, SUMMARIZE_JOB, result.id)) enqueueSummary(device.userId, result.id);
     sendJson(res, result satisfies TranscriptUploadResponse, result.created ? 201 : 200);
@@ -173,12 +185,32 @@ export function createApp(opts: AppOptions): App {
     if (!speakerNames) throw new HttpError(404, "No such transcript.");
     sendJson(res, { speakerNames } satisfies SpeakerNamesResponse);
   });
+  const suggestionsOf = (userId: number, id: string): SpeakerSuggestionsResponse => {
+    const job = jobs.find(userId, SUGGEST_SPEAKERS_JOB, id);
+    return { suggestions: getSpeakerSuggestions(store.user(userId), id), job: job && jobState(job) };
+  };
+  route("GET", "/api/transcripts/:id/speakers/suggestions", ({ req, res, params }) => {
+    const user = auth.requireUser(req);
+    const id = params[0].toLowerCase();
+    if (!transcriptExists(store.user(user.id), id)) throw new HttpError(404, "No such transcript.");
+    sendJson(res, suggestionsOf(user.id, id));
+  });
+  route("POST", "/api/transcripts/:id/speakers/suggestions", async ({ req, res, params }) => {
+    const user = auth.requireUser(req);
+    await readJson(req); // content-type check = CSRF guard
+    const id = params[0].toLowerCase();
+    if (!transcriptExists(store.user(user.id), id)) throw new HttpError(404, "No such transcript.");
+    jobs.enqueue(user.id, SUGGEST_SPEAKERS_JOB, id);
+    runner.kick();
+    sendJson(res, suggestionsOf(user.id, id), 202);
+  });
   route("DELETE", "/api/transcripts/:id", ({ req, res, params }) => {
     const user = auth.requireUser(req);
     const id = params[0].toLowerCase();
     if (!deleteTranscript(store.user(user.id), id, now())) throw new HttpError(404, "No such transcript.");
     // After the row is gone: a run in flight saves nothing and can't settle the removed job.
     jobs.remove(user.id, SUMMARIZE_JOB, id);
+    jobs.remove(user.id, SUGGEST_SPEAKERS_JOB, id);
     sendNoContent(res);
   });
   route("GET", "/api/transcripts/:id/summary", ({ req, res, params }) => {

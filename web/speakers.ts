@@ -1,4 +1,6 @@
-import type { TranscriptDetail } from "../shared/api.js";
+import type { JobState, SpeakerSuggestion, TranscriptDetail } from "../shared/api.js";
+import { formatDateTime } from "../shared/format.js";
+import { POLL_ACTIVE_MS, POLL_WAITING_MS, type SummaryTone } from "./summaryState.js";
 
 // Pure helpers for the transcript page's speaker names (unit-tested).
 
@@ -29,4 +31,39 @@ export function speakerEdits(names: Record<string, string>, drafts: Record<strin
     if (next !== saved) out[label] = next;
   }
   return out;
+}
+
+/** Suggestion worth offering: label unnamed (server filters too) and not already typed into the input. */
+export function suggestionFor(label: string, names: Record<string, string>, value: string, suggestions: Record<string, SpeakerSuggestion>): SpeakerSuggestion | null {
+  if (Object.hasOwn(names, label) || !Object.hasOwn(suggestions, label)) return null;
+  const s = suggestions[label];
+  return s.name === value.trim() ? null : s;
+}
+
+export interface SuggestJobView {
+  message: string | null;
+  tone: SummaryTone;
+  inProgress: boolean;
+  pollMs: number | null;
+}
+
+/** Status line for the "Suggest names" job; same polling cadence as summaries. */
+export function suggestJobView(job: JobState | null, suggestionCount: number, timeZone?: string): SuggestJobView {
+  if (!job) return { message: null, tone: "info", inProgress: false, pollMs: null };
+  switch (job.status) {
+    case "running":
+      return { message: "Looking for names in the transcript…", tone: "info", inProgress: true, pollMs: POLL_ACTIVE_MS };
+    case "queued":
+      if (!job.lastError) return { message: "Looking for names: queued…", tone: "info", inProgress: true, pollMs: POLL_ACTIVE_MS };
+      return {
+        message: `Looking for names: waiting to retry (${job.lastError}). Next attempt ${formatDateTime(job.nextAttemptAt, timeZone)}.`,
+        tone: "warn",
+        inProgress: true,
+        pollMs: POLL_WAITING_MS,
+      };
+    case "failed":
+      return { message: `Name suggestions failed: ${job.lastError ?? "unknown error"}`, tone: "error", inProgress: false, pollMs: null };
+    case "done":
+      return { message: suggestionCount ? null : "No names found for the unnamed speakers.", tone: "info", inProgress: false, pollMs: null };
+  }
 }

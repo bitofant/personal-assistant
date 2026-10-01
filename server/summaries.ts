@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import type { LlmRouteRef, MeetingType, MeetingTypeSource, Person, TranscriptSegment, TranscriptSummary, TranscriptUpload } from "../shared/api.js";
 import { formatDuration, formatOffset } from "../shared/format.js";
 import { applicableInstructions, MEETING_TYPES, resolveInstructions, type ResolvedInstructions } from "../shared/instructions.js";
@@ -292,15 +293,44 @@ export interface SummaryResult {
 
 const overflowed = (err: unknown) => err instanceof LlmError && err.contextOverflow;
 
+/** Results of notes calls that already succeeded: a retry after an outage reuses them (same prompt = same key). */
+export interface NotesCache {
+  get(key: string): ChatResult | null;
+  put(key: string, result: ChatResult): void;
+}
+
+/** null route = "task default": a config change of the default between attempts isn't detected (rare; notes still valid). */
+export function notesCacheKey(route: LlmRouteRef | null | undefined, messages: readonly ChatMessage[]): string {
+  return createHash("sha256").update(JSON.stringify({ route: route ?? null, messages })).digest("hex");
+}
+
+export function dbNotesCache(db: Db, transcriptId: string, now: () => number): NotesCache {
+  const id = transcriptId.toLowerCase();
+  return {
+    get: (key) => {
+      const r = db.prepare("SELECT result FROM summary_calls WHERE transcript_id = ? AND key = ?").get(id, key) as { result: string } | undefined;
+      return r ? (JSON.parse(r.result) as ChatResult) : null;
+    },
+    put: (key, result) => {
+      // WHERE EXISTS: transcript deleted mid-run → store nothing (no FK error failing the job).
+      db.prepare(
+        `INSERT OR REPLACE INTO summary_calls (transcript_id, key, result, created_at)
+         SELECT ?, ?, ?, ? WHERE EXISTS (SELECT 1 FROM transcripts WHERE id = ?)`,
+      ).run(id, key, JSON.stringify(result), now(), id);
+    },
+  };
+}
+
 /**
  * One call if it fits (or the window is unknown); else, or on a context-overflow reply, summarize in parts:
- * notes per part → merge neighbours until they fit → one combined summary. Outages propagate (job waits, restarts from scratch).
+ * notes per part → merge neighbours until they fit → one combined summary. Outages propagate (job waits); with a
+ * `cache`, the retry resumes from the notes already taken.
  */
 export async function summarizeTranscript(
   t: TranscriptUpload,
   instructions: ResolvedInstructions,
   llm: Llm,
-  opts: { route?: LlmRouteRef | null; signal?: AbortSignal; contextTokens: number | null },
+  opts: { route?: LlmRouteRef | null; signal?: AbortSignal; contextTokens: number | null; cache?: NotesCache },
 ): Promise<SummaryResult> {
   let usage: Usage = { promptTokens: 0, completionTokens: 0 };
   let last: ChatResult | undefined;
@@ -308,6 +338,19 @@ export async function summarizeTranscript(
     last = await llm.chat("summary", messages, { temperature: 0.2, signal: opts.signal, route: opts.route });
     usage = addUsage(usage, last.usage);
     return parseSummaryReply(last);
+  };
+  // Parts/merges only: their prompts are deterministic for a given window, so a retry recomputes the same keys.
+  // Cached usage still counts: those tokens were spent for this summary.
+  const notesChat = async (messages: ChatMessage[]) => {
+    const key = opts.cache && notesCacheKey(opts.route, messages);
+    const hit = key ? opts.cache!.get(key) : null;
+    if (hit) {
+      usage = addUsage(usage, hit.usage);
+      return parseSummaryReply(hit);
+    }
+    const text = await chat(messages);
+    if (key) opts.cache!.put(key, last!);
+    return text;
   };
   const result = (text: string, parts: number): SummaryResult => ({ text, provider: last!.provider, model: last!.model, usage, parts });
 
@@ -337,7 +380,7 @@ export async function summarizeTranscript(
     const chunks = chunkSegments(t.segments, inputBudgetChars(ctx, buildPartPrompt(t, instructions, [], 0, 1)));
     let notes: PartNotes[] = [];
     for (const [i, part] of chunks.entries()) {
-      const text = await chat(buildPartPrompt(t, instructions, part, i, chunks.length));
+      const text = await notesChat(buildPartPrompt(t, instructions, part, i, chunks.length));
       notes.push({ from: i, to: i, total: chunks.length, start: part[0].start, end: part[part.length - 1].end, text });
     }
     for (let round = 0; ; round++) {
@@ -347,7 +390,7 @@ export async function summarizeTranscript(
       const merged: PartNotes[] = [];
       for (const g of groupNotes(notes, inputBudgetChars(ctx, buildMergeNotesPrompt(t, instructions, [])))) {
         if (g.length === 1) merged.push(g[0]);
-        else merged.push({ from: g[0].from, to: g[g.length - 1].to, total: chunks.length, start: g[0].start, end: g[g.length - 1].end, text: await chat(buildMergeNotesPrompt(t, instructions, g)) });
+        else merged.push({ from: g[0].from, to: g[g.length - 1].to, total: chunks.length, start: g[0].start, end: g[g.length - 1].end, text: await notesChat(buildMergeNotesPrompt(t, instructions, g)) });
       }
       notes = merged;
     }
@@ -382,7 +425,15 @@ export interface SummaryRecord {
   transcriptUpdatedAt: number;
 }
 
+/** Also drops the notes cache: a later re-summarize starts fresh (new model/instructions pick). */
 export function saveSummary(db: Db, s: SummaryRecord, now: number): void {
+  db.transaction(() => {
+    insertSummary(db, s, now);
+    db.prepare("DELETE FROM summary_calls WHERE transcript_id = ?").run(s.transcriptId.toLowerCase());
+  })();
+}
+
+function insertSummary(db: Db, s: SummaryRecord, now: number): void {
   db.prepare(
     `INSERT INTO summaries (transcript_id, text, meeting_type, meeting_type_source, instructions_source, instructions, provider, model,
        prompt_tokens, completion_tokens, parts, transcript_updated_at, created_at)
@@ -413,14 +464,23 @@ export function saveSummary(db: Db, s: SummaryRecord, now: number): void {
   });
 }
 
+/**
+ * Instructions a re-summarize would use now differ from those stored. Type kept as summarized (no re-classify);
+ * compares source too: same text moved to another level still counts as a change.
+ */
+export function instructionsChanged(db: Db, stored: { meetingType: MeetingType; seriesId: string | null; source: string; text: string }): boolean {
+  const now = resolveInstructions(stored.meetingType, stored.seriesId, applicableInstructions(listInstructions(db), stored.meetingType, stored.seriesId));
+  return now.text !== stored.text || now.source !== stored.source;
+}
+
 export function getSummary(db: Db, transcriptId: string): TranscriptSummary | null {
   const r = db
     .prepare(
-      `SELECT s.*, t.updated_at AS current_updated_at FROM summaries s JOIN transcripts t ON t.id = s.transcript_id
+      `SELECT s.*, t.updated_at AS current_updated_at, t.series_id FROM summaries s JOIN transcripts t ON t.id = s.transcript_id
        WHERE s.transcript_id = ?`,
     )
     .get(transcriptId.toLowerCase()) as
-    | { text: string; meeting_type: MeetingType; meeting_type_source: MeetingTypeSource | null; instructions_source: string; provider: string; model: string; parts: number | null; transcript_updated_at: number; current_updated_at: number; created_at: number }
+    | { text: string; meeting_type: MeetingType; meeting_type_source: MeetingTypeSource | null; instructions_source: string; instructions: string; provider: string; model: string; parts: number | null; transcript_updated_at: number; current_updated_at: number; series_id: string | null; created_at: number }
     | undefined;
   if (!r) return null;
   return {
@@ -432,6 +492,7 @@ export function getSummary(db: Db, transcriptId: string): TranscriptSummary | nu
     model: r.model,
     createdAt: new Date(r.created_at).toISOString(),
     stale: r.current_updated_at > r.transcript_updated_at,
+    instructionsChanged: instructionsChanged(db, { meetingType: r.meeting_type, seriesId: r.series_id, source: r.instructions_source, text: r.instructions }),
     parts: r.parts,
   };
 }
@@ -476,7 +537,8 @@ export function summarizeHandler(deps: { store: Store; llm: Llm; now: () => numb
     const seriesType = seriesMeetingType(db, seriesId, t.upload.id);
     const { type: meetingType, source: meetingTypeSource } = await classifyMeeting(t.upload, deps.llm, { route, signal, seriesType });
     const instructions = resolveInstructions(meetingType, seriesId, applicableInstructions(listInstructions(db), meetingType, seriesId));
-    const r = await summarizeTranscript(t.upload, instructions, deps.llm, { route, signal, contextTokens: deps.llm.contextTokens("summary", route) });
+    const cache = dbNotesCache(db, t.upload.id, deps.now);
+    const r = await summarizeTranscript(t.upload, instructions, deps.llm, { route, signal, contextTokens: deps.llm.contextTokens("summary", route), cache });
     saveSummary(
       db,
       {

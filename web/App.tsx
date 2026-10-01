@@ -6,6 +6,7 @@ import type {
   SettingsResponse,
   SignupResponse,
   SpeakerNamesResponse,
+  SpeakerSuggestionsResponse,
   AuthOptionsResponse,
   SummarizeResponse,
   TranscriptDetail,
@@ -20,7 +21,8 @@ import { api, ApiError } from "./api.js";
 import { emptySearch, parseSearchHash, parseTranscriptHash, transcriptHash } from "./routes.js";
 import { Account } from "./Account.js";
 import { Search, SearchBox } from "./Search.js";
-import { displaySpeaker, nameSuggestions, speakerEdits, speakerLabels } from "./speakers.js";
+import { deviceActivityLine, REVOKE_HELP, revokeConfirmText } from "./devices.js";
+import { displaySpeaker, nameSuggestions, speakerEdits, speakerLabels, suggestionFor, suggestJobView } from "./speakers.js";
 import { SummarySettings } from "./Settings.js";
 import { summaryStatusView, type SummaryTone } from "./summaryState.js";
 import { ErrorLine, routeKey, routeLabel } from "./ui.js";
@@ -265,12 +267,35 @@ function Transcript({ id, seg }: { id: string; seg: number | null }) {
   );
 }
 
-/** Name diarization labels; attendees offered as suggestions. Saving re-labels transcript + search, marks the summary stale. */
+/**
+ * Name diarization labels; attendees offered as suggestions, plus LLM proposals on request ("Use" only fills the
+ * input: nothing is saved until the user saves). Saving re-labels transcript + search, marks the summary stale.
+ */
 function SpeakerNames({ t, onSaved }: { t: TranscriptDetail; onSaved: () => void }) {
   const labels = useMemo(() => speakerLabels(t), [t]);
   const [drafts, setDrafts] = useState<Record<string, string>>({});
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [sugg, setSugg] = useState<SpeakerSuggestionsResponse | null>(null);
+  const suggPath = `/transcripts/${encodeURIComponent(t.id)}/speakers/suggestions`;
+  const suggCount = sugg ? Object.keys(sugg.suggestions).length : 0;
+  const suggView = suggestJobView(sugg?.job ?? null, suggCount);
+  // Reload on t change too: saving a name hides that label's suggestion server-side.
+  useEffect(() => {
+    api<SpeakerSuggestionsResponse>(suggPath).then(setSugg, () => setSugg(null));
+  }, [suggPath, t]);
+  useEffect(() => {
+    if (suggView.pollMs === null) return;
+    const timer = setTimeout(() => {
+      api<SpeakerSuggestionsResponse>(suggPath).then(setSugg, (e: Error) => (setError(e.message), setSugg((s) => s && { ...s })));
+    }, suggView.pollMs);
+    return () => clearTimeout(timer);
+  }, [sugg, suggView.pollMs, suggPath]);
+  const suggest = () =>
+    api<SpeakerSuggestionsResponse>(suggPath, { body: {} }).then(
+      (r) => (setSugg(r), setError(null)),
+      (e: Error) => setError(e.message),
+    );
   if (!labels.length) return null;
   // Input = draft, else saved name, else empty (placeholder shows the label).
   const valueOf = (l: string) => drafts[l] ?? (Object.hasOwn(t.speakerNames, l) ? t.speakerNames[l] : "");
@@ -292,25 +317,51 @@ function SpeakerNames({ t, onSaved }: { t: TranscriptDetail; onSaved: () => void
   };
   return (
     <details className="speakers">
-      <summary>Speakers ({labels.length})</summary>
+      <summary>
+        Speakers ({labels.length}){suggCount > 0 && <span className="badge">{suggCount} suggested</span>}
+      </summary>
       <form onSubmit={(e) => void save(e)}>
         <datalist id={listId}>
           {nameSuggestions(t).map((n) => (
             <option key={n} value={n} />
           ))}
         </datalist>
-        {labels.map((l) => (
-          <label key={l} className="row">
-            <span className="speaker-label">{l}</span>
-            <input className="grow" list={listId} placeholder={l} maxLength={100} value={valueOf(l)} onChange={(e) => setDrafts({ ...drafts, [l]: e.target.value })} />
-          </label>
-        ))}
+        {labels.map((l) => {
+          const s = sugg && suggestionFor(l, t.speakerNames, valueOf(l), sugg.suggestions);
+          return (
+            <div key={l} className="speaker-row">
+              <label className="row">
+                <span className="speaker-label">{l}</span>
+                <input className="grow" list={listId} placeholder={l} maxLength={100} value={valueOf(l)} onChange={(e) => setDrafts({ ...drafts, [l]: e.target.value })} />
+              </label>
+              {s && (
+                <p className="speaker-suggestion">
+                  <button type="button" onClick={() => setDrafts({ ...drafts, [l]: s.name })}>
+                    Use
+                  </button>
+                  <span>
+                    Suggested: <strong>{s.name}</strong>
+                    {s.evidence && <span className="muted"> — “{s.evidence}”</span>}
+                  </span>
+                </p>
+              )}
+            </div>
+          );
+        })}
         <p className="row">
           <button className="primary" disabled={busy || !Object.keys(edits).length}>
             {busy ? "Saving…" : "Save names"}
           </button>
           <span className="muted grow">Empty = keep the label. Re-summarize afterwards to use the names in the summary.</span>
+          <button type="button" disabled={suggView.inProgress} onClick={() => void suggest()} title="Ask the LLM who is speaking, from introductions and names used in the call">
+            {suggView.inProgress ? "Suggesting…" : "Suggest names"}
+          </button>
         </p>
+        {suggView.message && (
+          <p role="status" className={TONE_CLASS[suggView.tone]}>
+            {suggView.message}
+          </p>
+        )}
         <ErrorLine error={error} />
       </form>
     </details>
@@ -408,6 +459,9 @@ function SummaryPanel({ transcriptId, initial }: { transcriptId: string; initial
           {summary.stale && !view.inProgress && (
             <p className="warn">The transcript changed after this summary was made.</p>
           )}
+          {summary.instructionsChanged && !view.inProgress && (
+            <p className="warn">The instructions for this meeting changed after this summary was made. Re-summarize to apply them.</p>
+          )}
           <div className={`summary ${view.inProgress ? "dim" : ""}`} dangerouslySetInnerHTML={{ __html: html }} />
           <p className="muted">
             {meetingTypeLabel(summary.meetingType)}
@@ -427,6 +481,8 @@ function Devices() {
   const [devices, setDevices] = useState<DeviceInfo[] | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [codes, setCodes] = useState<Record<string, string>>({});
+  // Device being renamed → draft name.
+  const [editing, setEditing] = useState<{ id: string; name: string } | null>(null);
 
   const load = useCallback(() => {
     api<DeviceListResponse>("/devices").then((r) => setDevices(r.devices), (e: Error) => setError(e.message));
@@ -435,6 +491,33 @@ function Devices() {
 
   const act = (p: Promise<unknown>) =>
     p.then(() => setError(null), (e: ApiError) => setError(e.message)).finally(load);
+  const rename = (e: FormEvent) => {
+    e.preventDefault();
+    if (!editing) return;
+    void api<DeviceInfo>(`/devices/${editing.id}`, { method: "PATCH", body: { name: editing.name } }).then(
+      () => (setEditing(null), setError(null), load()),
+      (err: ApiError) => setError(err.message),
+    );
+  };
+  const nameCell = (d: DeviceInfo) =>
+    editing?.id === d.id ? (
+      <form className="row device-rename" onSubmit={rename}>
+        <input aria-label="Device name" autoFocus maxLength={100} value={editing.name} onChange={(e) => setEditing({ id: d.id, name: e.target.value })} />
+        <button className="primary" disabled={!editing.name.trim() || editing.name.trim() === d.name}>
+          Save
+        </button>
+        <button type="button" onClick={() => setEditing(null)}>
+          Cancel
+        </button>
+      </form>
+    ) : (
+      <>
+        <strong>{d.name}</strong>
+        <button className="link-button" onClick={() => setEditing({ id: d.id, name: d.name })}>
+          Rename
+        </button>
+      </>
+    );
 
   if (!devices) return error ? <ErrorLine error={error} /> : <p className="muted">Loading…</p>;
   return (
@@ -449,37 +532,43 @@ function Devices() {
       {!devices.length && <p className="empty-state">No devices.</p>}
       <ul className="list">
         {devices.map((d) => (
-          <li key={d.id} className="row">
-            <strong>{d.name}</strong>
-            <span className={d.status === "pending" ? "badge" : "muted"}>{d.status}</span>
-            {d.status === "pending" ? (
-              <>
-                <span className="muted grow">expires {formatDateTime(d.expiresAt)}</span>
-                <input
-                  placeholder="6-digit code"
-                  inputMode="numeric"
-                  size={10}
-                  value={codes[d.id] ?? ""}
-                  onChange={(e) => setCodes({ ...codes, [d.id]: e.target.value })}
-                />
-                <button className="primary" onClick={() => act(api(`/devices/${d.id}/approve`, { body: { pairingCode: codes[d.id] ?? "" } }))}>
-                  Approve
-                </button>
-                <button onClick={() => act(api(`/devices/${d.id}`, { method: "DELETE" }))}>Reject</button>
-              </>
-            ) : (
-              <>
-                <span className="muted grow">
-                  paired {formatDateTime(d.approvedAt)} · last used {formatDateTime(d.lastUsedAt)}
-                </span>
-                <button className="danger" onClick={() => confirm(`Revoke ${d.name}?`) && act(api(`/devices/${d.id}`, { method: "DELETE" }))}>
-                  Revoke
-                </button>
-              </>
-            )}
+          <li key={d.id} className="device">
+            <div className="row">
+              {nameCell(d)}
+              <span className={d.status === "pending" ? "badge" : "muted"}>{d.status}</span>
+              {d.status === "pending" ? (
+                <>
+                  <span className="muted grow">expires {formatDateTime(d.expiresAt)}</span>
+                  <input
+                    placeholder="6-digit code"
+                    inputMode="numeric"
+                    size={10}
+                    value={codes[d.id] ?? ""}
+                    onChange={(e) => setCodes({ ...codes, [d.id]: e.target.value })}
+                  />
+                  <button className="primary" onClick={() => act(api(`/devices/${d.id}/approve`, { body: { pairingCode: codes[d.id] ?? "" } }))}>
+                    Approve
+                  </button>
+                  <button onClick={() => act(api(`/devices/${d.id}`, { method: "DELETE" }))}>Reject</button>
+                </>
+              ) : (
+                <>
+                  <span className="grow" />
+                  <button className="danger" onClick={() => confirm(revokeConfirmText(d)) && act(api(`/devices/${d.id}`, { method: "DELETE" }))}>
+                    Revoke
+                  </button>
+                </>
+              )}
+            </div>
+            {d.status === "active" && <p className="muted device-activity">{deviceActivityLine(d)}</p>}
           </li>
         ))}
       </ul>
+      {devices.some((d) => d.status === "active") && <p className="muted device-help">
+          {REVOKE_HELP.before}
+          <code>{REVOKE_HELP.command}</code>
+          {REVOKE_HELP.after}
+        </p>}
     </section>
   );
 }

@@ -76,6 +76,10 @@ export const APP_MIGRATIONS = [
   );
   CREATE INDEX jobs_due ON jobs(status, run_at);
   `,
+  // Last accepted transcript upload (incl. unchanged retries); last_used_at also counts status polls.
+  `
+  ALTER TABLE devices ADD COLUMN last_upload_at INTEGER;
+  `,
 ] as const;
 
 // Per-user DB: all of one user's content. Isolation by file, not by WHERE user_id.
@@ -185,6 +189,28 @@ export const USER_MIGRATIONS = [
     label TEXT NOT NULL,
     name TEXT NOT NULL,
     updated_at INTEGER NOT NULL,
+    PRIMARY KEY (transcript_id, label)
+  );
+  `,
+  // Long-summary notes calls (parts/merges) done so far, keyed by sha256(route + prompt): a job retried after an
+  // outage resumes instead of redoing every part. Cleared when the summary is saved.
+  `
+  CREATE TABLE summary_calls (
+    transcript_id TEXT NOT NULL REFERENCES transcripts(id) ON DELETE CASCADE,
+    key TEXT NOT NULL,
+    result TEXT NOT NULL,
+    created_at INTEGER NOT NULL,
+    PRIMARY KEY (transcript_id, key)
+  );
+  `,
+  // LLM speaker-name proposals. Separate from speaker_names: suggestions are never applied without the user.
+  `
+  CREATE TABLE speaker_suggestions (
+    transcript_id TEXT NOT NULL REFERENCES transcripts(id) ON DELETE CASCADE,
+    label TEXT NOT NULL,
+    name TEXT NOT NULL,
+    evidence TEXT,
+    created_at INTEGER NOT NULL,
     PRIMARY KEY (transcript_id, label)
   );
   `,

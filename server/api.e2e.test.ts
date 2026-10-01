@@ -15,6 +15,7 @@ import type {
   SettingsResponse,
   SignupResponse,
   SpeakerNamesResponse,
+  SpeakerSuggestionsResponse,
   SummarizeResponse,
   TranscriptDetail,
   TranscriptListResponse,
@@ -264,6 +265,9 @@ describe("API flow", () => {
     expect(await typeRes.json()).toMatchObject({ scope: "type", key: "1on1", text: "1on1 custom" });
     const series = encodeURIComponent("AAMkAGI2TG93SERIES=");
     expect((await put(`/series/${series}`, { text: "SERIES-TEXT" })).status).toBe(200);
+    // Summary from the previous test used built-in 1on1 → now outdated, while the transcript itself isn't.
+    const sum = (await (await fetch(`${base}/api/transcripts/${upload.id.toLowerCase()}/summary`, { headers: { cookie } })).json()) as TranscriptSummaryResponse;
+    expect(sum.summary).toMatchObject({ instructionsSource: "builtin:1on1", instructionsChanged: true, stale: false });
     expect((await put("/type/party", { text: "x" })).status).toBe(400);
     expect((await put("/default", { text: "  " })).status).toBe(400);
     expect((await put("/default", { text: "x" }, {})).status).toBe(401);
@@ -514,6 +518,73 @@ describe("API flow", () => {
 
     expect((await put({ names: { [label]: null } })).status).toBe(200);
     expect((await get()).speakerNames).toEqual({});
+  });
+
+  it("speaker suggestions: LLM proposes, never applied; changed re-upload clears them", async () => {
+    const paUpload = JSON.parse(readFileSync("shared/fixtures/transcript-upload-pa.json", "utf8"));
+    const id = paUpload.id.toLowerCase();
+    const path = `/api/transcripts/${id}/speakers/suggestions`;
+    const get = async () => (await (await fetch(base + path, { headers: { cookie } })).json()) as SpeakerSuggestionsResponse;
+    const llm = createServer((req, res) => {
+      let body = "";
+      req.on("data", (c) => (body += c));
+      req.on("end", () => {
+        const sys = (JSON.parse(body) as { messages: { content: string }[] }).messages[0].content;
+        const content = sys.startsWith("You identify speakers") ? '{"Speaker 1": {"name": "Bob", "evidence": "thanks Bob"}, "Alice Example": "Mallory"}' : "## S";
+        res.setHeader("content-type", "application/json");
+        res.end(JSON.stringify({ model: "fake", choices: [{ message: { content }, finish_reason: "stop" }] }));
+      });
+    });
+    await new Promise<void>((r) => llm.listen(0, "127.0.0.1", r));
+    try {
+      config = parseConfig({
+        users: ["alice"],
+        llm: { providers: [{ id: "fake", baseUrl: `http://127.0.0.1:${(llm.address() as AddressInfo).port}/v1` }], tasks: { summary: { provider: "fake", model: "fake" } } },
+      });
+      expect(await get()).toEqual({ suggestions: {}, job: null });
+      expect((await fetch(base + path)).status).toBe(401);
+      expect((await fetch(base + path, { method: "POST", headers: { cookie } })).status).toBe(415); // CSRF guard
+      expect((await post(`/api/transcripts/0d0d0d0d-0000-4000-8000-000000000000/speakers/suggestions`, {}, { cookie })).status).toBe(404);
+
+      const r = await post(path, {}, { cookie });
+      expect(r.status).toBe(202);
+      expect(((await r.json()) as SpeakerSuggestionsResponse).job).toMatchObject({ status: "queued" });
+      let s!: SpeakerSuggestionsResponse;
+      await waitFor(async () => (s = await get()).job?.status === "done");
+      expect(s.suggestions).toEqual({ "Speaker 1": { name: "Bob", evidence: "thanks Bob" } }); // unasked label dropped
+      const d = (await (await fetch(`${base}/api/transcripts/${id}`, { headers: { cookie } })).json()) as TranscriptDetail;
+      expect(d.speakerNames).toEqual({});
+
+      expect((await post("/api/device/transcripts", { ...paUpload, segments: paUpload.segments.slice(1) }, bearer)).status).toBe(200);
+      expect((await get()).suggestions).toEqual({});
+    } finally {
+      config = parseConfig({ users: ["alice"] });
+      await new Promise((r) => llm.close(r));
+    }
+  });
+
+  it("devices: list shows upload stats; PATCH renames (CSRF, validation), device API sees the new name", async () => {
+    const list = async () => ((await (await fetch(`${base}/api/devices`, { headers: { cookie } })).json()) as DeviceListResponse).devices;
+    const before = (await list()).find((d) => d.id === deviceId)!;
+    // Earlier tests uploaded the meeting + both pa fixtures (one deleted again) from this device.
+    expect(before.transcriptCount).toBe(3);
+    expect(before.lastUploadAt).not.toBeNull();
+    const patch = (body: unknown, headers: Record<string, string> = { cookie }) => fetch(`${base}/api/devices/${deviceId}`, { method: "PATCH", ...json(body, headers) });
+    expect((await patch({ name: "x" }, {})).status).toBe(401);
+    expect((await patch({ name: "x" }, bearer)).status).toBe(401); // device token ≠ web session
+    expect((await fetch(`${base}/api/devices/${deviceId}`, { method: "PATCH", headers: { cookie }, body: '{"name":"x"}' })).status).toBe(415);
+    expect((await patch({ name: " " })).status).toBe(400);
+    expect((await fetch(`${base}/api/devices/nope`, { method: "PATCH", ...json({ name: "x" }, { cookie }) })).status).toBe(404);
+    const r = await patch({ name: " Work Mac " });
+    expect(r.status).toBe(200);
+    expect(await r.json()).toMatchObject({ id: deviceId, name: "Work Mac", transcriptCount: 3 });
+    expect(((await (await fetch(`${base}/api/device/me`, { headers: bearer })).json()) as DeviceMeResponse).deviceName).toBe("Work Mac");
+    const list1 = (await (await fetch(`${base}/api/transcripts`, { headers: { cookie } })).json()) as TranscriptListResponse;
+    expect(list1.transcripts.every((t) => t.deviceName === "Work Mac")).toBe(true);
+    // Unchanged re-upload (device retry) still counts as an upload.
+    await new Promise((res) => setTimeout(res, 5));
+    expect((await post("/api/device/transcripts", upload, bearer)).status).toBe(200);
+    expect(Date.parse((await list()).find((d) => d.id === deviceId)!.lastUploadAt!)).toBeGreaterThan(Date.parse(before.lastUploadAt!));
   });
 
   it("disabling the user in config cuts off both web session and device", async () => {

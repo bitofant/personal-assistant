@@ -9,17 +9,17 @@ Self-hosted meeting assistant. A headless macOS agent records and transcribes yo
 
 Status: early. The server supports:
 - web accounts (sign up while `auth.signup` is on, then an admin enables the account)
-- pairing a Mac as a device (you approve it with a 6-digit code)
+- pairing a Mac as a device (you approve it with a 6-digit code). The Devices page shows each Mac's transcript count and last upload, lets you rename it (`pa status` on the Mac shows the new name), and explains what revoking does: the Mac is signed out at once, its uploaded transcripts stay, and anything still in its upload queue waits until you `pa pair` and approve it again.
 - transcript upload from a paired device
 - a web UI to browse transcripts, and to delete one (with its summary and search entries). A deleted transcript can't be uploaded again: the server answers `410 Gone`. Existing backups keep it until they rotate out.
 - LLM summaries of uploaded transcripts, made in a background job queue and shown on the transcript page (with progress, retry-after-outage and failure status, and a re-summarize button); `GET /api/llm/status` shows whether each LLM task is reachable. Jobs of disabled users wait until they're re-enabled.
-- summary settings page: pick the summary model (e.g. local or a paid remote one, from those the admin configured) and write custom instructions per recurring series, per meeting type, or as your default. The most specific ones win. The meeting type (1:1, stand-up, interview, external, meeting, ad-hoc) comes from the calendar event: no event means ad-hoc, title keywords decide next, and 2 attendees means 1:1. When those rules can't tell, a recurring meeting reuses the type of its earlier occurrences, and otherwise the LLM classifies it.
+- summary settings page: pick the summary model (e.g. local or a paid remote one, from those the admin configured) and write custom instructions per recurring series, per meeting type, or as your default. The most specific ones win. The meeting type (1:1, stand-up, interview, external, meeting, ad-hoc) comes from the calendar event: no event means ad-hoc, title keywords decide next, and 2 attendees means 1:1. When those rules can't tell, a recurring meeting reuses the type of its earlier occurrences, and otherwise the LLM classifies it. A summary made before you edited the instructions that apply to it is flagged, so you know to re-summarize.
 - keyword search (search box in the nav bar, `GET /api/search?q=`) over titles, attendee names/emails and what was said. Every word must appear somewhere in the meeting; words match as prefixes, `"quoted phrases"` match exactly, and case and accents are ignored. Results show the best matching lines highlighted; click a timestamp to jump to that line. Filter by date range and by people (name or email, comma-separated; all must have attended). Filters work without a query too, listing matching meetings newest first. Semantic (embedding) search isn't built yet; see `AGENTS.md`.
 
-- speaker names: on a transcript page, open Speakers and name the diarization labels ("Speaker 2" → "Bob"). People from the calendar invite are offered as suggestions. Names show in the transcript and in search results, and the next summary uses them (the current summary is marked out of date).
+- speaker names: on a transcript page, open Speakers and name the diarization labels ("Speaker 2" → "Bob"). People from the calendar invite are offered as suggestions. Names show in the transcript and in search results, and the next summary uses them (the current summary is marked out of date). **Suggest names** asks the LLM (your summary model) who the unnamed `Speaker N` labels are, from introductions and names used in the call; each suggestion shows the quote it's based on, and nothing is saved until you click Use and then Save. New content uploaded from the Mac clears old suggestions.
 - account page: download everything stored for you as one JSON file, or delete your account. Deleting needs your password and removes your transcripts, summaries, devices and sessions, plus your copies in every backup. The admin should then remove the username from `config.json` `users`.
 
-Data lives in `data/` (gitignored): `app.db` holds accounts, sessions, devices and the job queue, and `users/<id>.db` holds one user's transcripts, search index, summaries, speaker names, custom instructions and settings.
+Data lives in `data/` (gitignored): `app.db` holds accounts, sessions, devices and the job queue, and `users/<id>.db` holds one user's transcripts, search index, summaries (plus notes of unfinished long summaries), speaker names and name suggestions, custom instructions and settings.
 
 ## Server setup (Linux)
 
@@ -39,7 +39,7 @@ All configuration is in `config.json`. There are no env vars.
 - `llm.providers`: OpenAI-compatible endpoints (local vLLM/llama.cpp, OpenRouter, …).
 - `llm.tasks`: routes `summary` / `search` / `embed` to a provider+model. If a task isn't routed, that feature is off. Jobs that need it wait in the queue until you route it.
   - A task can also take a list of routes. The first is the default. For `summary`, each user can pick any listed route in the web UI, e.g. `[{local}, {openrouter}]` to offer a paid remote model. Users can only pick routes you list here.
-  - Optional `contextTokens` per route = the model's context window (vLLM: `max_model_len` in `/v1/models`). Meetings too long for it are summarized in parts (notes per part, then one combined summary). Without it, the whole transcript is tried first and split only if the model replies that it's too long.
+  - Optional `contextTokens` per route = the model's context window (vLLM: `max_model_len` in `/v1/models`). Meetings too long for it are summarized in parts (notes per part, then one combined summary). If the LLM goes down partway, the retry picks up from the parts already done. Without it, the whole transcript is tried first and split only if the model replies that it's too long.
 - `backup` (optional): `{"dir": "data/backups", "keep": 14}`, see Backups below.
 
 ### Production (systemd user service)
