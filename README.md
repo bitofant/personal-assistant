@@ -123,6 +123,9 @@ Settings live in `~/Library/Application Support/com.bitofant.pa/config.json`. `p
 - `workCalendars`: calendars whose events label recordings, as `Name` or `Source/Name` (copy them from `pa calendars`). If this is empty, every recording is ad-hoc, so titles from personal events never reach the server.
 - `ignoreMicApps`: bundle ids whose mic use doesn't mean "in a call". The log names the processes holding the mic whenever that changes.
 - `keepAudioDays`: keep the audio this many days after transcription, in `recordings/kept/`. Off by default.
+- `liveTranscription`: `false` turns off the live preview (below). On by default.
+
+**Live preview.** While a meeting is recording, `pa run` also transcribes it as it goes (streaming Parakeet, 5 s chunks) and sends the text to the server every few seconds. The transcript list marks it `● live`; its page shows the text a few seconds behind real time (target ≤10 s; not yet measured on a Mac), with your mic as you and everything else as `Others`. When the recording stops, the page says so and switches by itself to the final transcript once the Mac has made and uploaded it (with speakers, summary, search). The preview is best effort: while the server is unreachable the Mac keeps the last ~5 min of preview text and sends it once it's back; older preview text is lost. The recording and the final transcript don't depend on it. Deleting a live transcript in the web UI also stops the Mac from uploading that meeting. Previews whose final transcript never arrives are dropped after 24 h.
 
 Recordings sit in `recordings/` (`<id>-mic.wav`, `<id>-system.wav`, `<id>.json`) until they are transcribed. If `pa` is killed mid-recording, the next start transcribes what was saved. A transcription that fails 3 times is left there and listed by `pa queue`. Only one `pa run` records at a time: a second one waits until the first exits. `pa run --no-record` only uploads the queue.
 

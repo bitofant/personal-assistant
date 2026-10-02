@@ -64,6 +64,16 @@ public func uploadRequest(server: URL, token: String, upload: TranscriptUpload) 
     request("POST", server, "/api/device/transcripts", token: token, json: try JSONEncoder().encode(upload))
 }
 
+/// `id` = recording/upload id (lowercase UUID).
+public func liveChunkRequest(server: URL, token: String, id: String, chunk: LiveChunk) throws -> ApiRequest {
+    request("POST", server, "/api/device/transcripts/\(id)/live", token: token, json: try JSONEncoder().encode(chunk))
+}
+
+/// Recording discarded (too short): server drops the preview.
+public func discardLiveRequest(server: URL, token: String, id: String) -> ApiRequest {
+    request("DELETE", server, "/api/device/transcripts/\(id)/live", token: token)
+}
+
 /// 2xx → decoded body; else `ErrorResponse.message` (or a snippet of the raw body, e.g. a proxy's HTML page).
 public func decodeResponse<T: Decodable>(_: T.Type, status: Int, body: Data) throws(ApiError) -> T {
     guard (200..<300).contains(status) else {

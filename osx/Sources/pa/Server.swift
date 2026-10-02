@@ -4,6 +4,17 @@ import PACore
 // Thin I/O for `pa pair` / `pa status` / `pa upload`; request building + decoding live in PACore (tested).
 
 func send<T: Decodable>(_ r: ApiRequest, as: T.Type) async throws(ApiError) -> T {
+    let (status, data) = try await sendRaw(r)
+    return try decodeResponse(T.self, status: status, body: data)
+}
+
+/// 204-style endpoints (no body on success).
+func sendNoContent(_ r: ApiRequest) async throws(ApiError) {
+    let (status, data) = try await sendRaw(r)
+    if !(200..<300).contains(status) { _ = try decodeResponse(ErrorResponse.self, status: status, body: data) }
+}
+
+private func sendRaw(_ r: ApiRequest) async throws(ApiError) -> (Int, Data) {
     var req = URLRequest(url: r.url, timeoutInterval: 30)
     req.httpMethod = r.method
     req.httpBody = r.body
@@ -13,7 +24,7 @@ func send<T: Decodable>(_ r: ApiRequest, as: T.Type) async throws(ApiError) -> T
         throw ApiError(status: nil, "\(r.url.host() ?? "server") unreachable: \(error.localizedDescription)")
     }
     guard let http = res as? HTTPURLResponse else { throw ApiError(status: nil, "not an HTTP response") }
-    return try decodeResponse(T.self, status: http.statusCode, body: data)
+    return (http.statusCode, data)
 }
 
 /// Paired server + token, or a hint to run `pa pair`.

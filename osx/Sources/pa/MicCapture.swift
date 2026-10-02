@@ -11,7 +11,7 @@ final class MicCapture: @unchecked Sendable {
     private(set) var writer: WavWriter?
 
     /// `deviceUID` nil = system default input.
-    func start(deviceUID: String?, writingTo url: URL) throws {
+    func start(deviceUID: String?, writingTo url: URL, sink: (@Sendable (AVAudioPCMBuffer) -> Void)? = nil) throws {
         let input = engine.inputNode
         var wanted: AudioObjectID?
         if let deviceUID {
@@ -29,7 +29,7 @@ final class MicCapture: @unchecked Sendable {
             forName: .AVAudioEngineConfigurationChange, object: engine, queue: nil
         ) { [weak self] _ in self?.configurationChanged() }
 
-        let w = try WavWriter(url: url, format: format)
+        let w = try WavWriter(url: url, format: format, sink: sink)
         writer = w
         input.installTap(onBus: 0, bufferSize: 4096, format: format) { buffer, _ in
             w.write(buffer)

@@ -20,6 +20,12 @@ private final class FakeRecorder: AudioRecorder {
     var warnings: [String] = []
     private(set) var started: [URL] = []
     private(set) var stops = 0
+    /// Live hook calls in order: "prepare <id>", "meeting <title|nil>", "discard", "stop".
+    private(set) var hooks: [String] = []
+
+    func prepare(_ meta: RecordingMeta) { hooks.append("prepare \(meta.id)") }
+    func meetingChanged(_ meeting: MeetingMeta?) { hooks.append("meeting \(meeting?.title ?? "nil")") }
+    func willDiscard() { hooks.append("discard") }
 
     func start(mic: URL, system: URL) throws {
         if failStart { throw UsageError("no tap") }
@@ -28,6 +34,7 @@ private final class FakeRecorder: AudioRecorder {
     }
 
     func stop() -> [String] {
+        hooks.append("stop")
         stops += 1
         return warnings
     }
@@ -106,6 +113,8 @@ private func noAudio(_ s: RecordingStore, _ n: Int) -> Bool { s.audio(id(n)).mic
         #expect(try h.metas().isEmpty)
         #expect(noAudio(h.store, 1))
         #expect(h.finished == 0)
+        // Live preview told before the capture stops, so it can drop instead of finishing.
+        #expect(h.recorders[0].hooks == ["prepare \(id(1))", "discard", "stop"])
     }
 
     @Test func adHocAttachedToEvent() throws {
@@ -117,6 +126,11 @@ private func noAudio(_ s: RecordingStore, _ n: Int) -> Bool { s.audio(id(n)).mic
         // Relabelled in place: same recording, no split.
         #expect(h.recorders.count == 1)
         #expect(try h.metas().map(\.meeting?.eventId) == ["e1"])
+        #expect(h.recorders[0].hooks == ["prepare \(id(1))", "meeting T e1"])
+        h.step(41, mic: false, events: [e])
+        h.step(44, mic: false, events: [e])
+        // Stop: final snapshot first (live end marker carries it), never "discard".
+        #expect(h.recorders[0].hooks == ["prepare \(id(1))", "meeting T e1", "meeting T e1", "stop"])
     }
 
     @Test func backToBackSplitsIntoTwoRecordings() throws {

@@ -1,0 +1,21 @@
+{
+  "stream": "system",
+  "seq": 0,
+  "startedAt": "2026-09-24T07:00:03Z",
+  "meeting": {
+    "calendarName": "Work",
+    "eventId": "AAMkAGI2-occurrence-20260924",
+    "seriesId": "AAMkAGI2",
+    "title": "Alice / Bob 1:1",
+    "start": "2026-09-24T07:00:00Z",
+    "end": "2026-09-24T07:30:00Z",
+    "organizer": { "name": "Alice", "email": "alice@example.com" },
+    "attendees": [
+      { "name": "Alice", "email": "alice@example.com" },
+      { "name": "Bob", "email": "bob@example.com" }
+    ]
+  },
+  "segments": [
+    { "start": 1.2, "end": 4.8, "speaker": "Others", "text": "Morning, shall we start with the release?" }
+  ]
+}

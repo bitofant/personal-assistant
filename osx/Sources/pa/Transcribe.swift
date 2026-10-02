@@ -11,7 +11,7 @@ func transcribe(_ o: TranscribeOptions) async throws {
     let startedAt = parseCaptureStamp(cap.stamp, timeZone: .current)!
     let mic = cap.mic.map { dir.appending(path: $0) }
     let system = cap.system.map { dir.appending(path: $0) }
-    let me = o.me ?? (NSFullUserName().isEmpty ? "Me" : NSFullUserName())
+    let me = o.me ?? micSpeakerName()
     print("recording \(cap.stamp): mic \(cap.mic ?? "—"), system \(cap.system ?? "—"), mic speaker \"\(me)\"")
 
     print("loading models (first run downloads them) …")

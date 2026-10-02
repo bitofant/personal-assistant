@@ -19,6 +19,34 @@ private func pairedOr401() throws(ApiError) -> (server: URL, token: String) {
     }
 }
 
+/// Mic stream speaker label (headphones assumed → mic = the local user only). Same for live + final transcript.
+func micSpeakerName() -> String { NSFullUserName().isEmpty ? "Me" : NSFullUserName() }
+
+/// Live preview for one recording; nil when off in config or unpaired (nothing to stream to). Server/token read per
+/// send, like the upload queue.
+private func makeLivePreview(_ meta: RecordingMeta) -> LivePreview? {
+    guard (try? loadAgentConfig())?.liveEnabled ?? true, (try? pairedOr401()) != nil else { return nil }
+    let id = meta.id
+    return LivePreview(
+        meta: meta, micSpeaker: micSpeakerName(),
+        send: { c in
+            do {
+                let (server, token) = try pairedOr401()
+                return .success(try await send(try liveChunkRequest(server: server, token: token, id: id, chunk: c), as: LiveChunkResponse.self))
+            } catch let e as ApiError {
+                return .failure(e)
+            } catch {
+                return .failure(ApiError(status: nil, "\(error)"))
+            }
+        },
+        discardRemote: {
+            guard let p = try? pairedOr401() else { return }
+            // Best effort: a leftover preview expires on the server (24 h) anyway.
+            try? await sendNoContent(discardLiveRequest(server: p.server, token: p.token, id: id))
+        },
+        log: daemonLog)
+}
+
 /// Token + server read per send → `pa pair` in another process takes effect without restarting `pa run`.
 func makeUploadQueue() -> UploadQueue {
     UploadQueue(store: UploadQueueStore(dir: uploadQueueDir())) { u in
@@ -58,6 +86,18 @@ func run(record: Bool) async throws {
 
     let recording: Task<Void, Never>
     if record {
+        if (try? loadAgentConfig())?.liveEnabled ?? true {
+            // Load now, not at the first meeting: the first minute of the first preview would be missing.
+            Task {
+                let t0 = Date()
+                do {
+                    _ = try await LiveModels.shared.get()
+                    daemonLog("live: streaming ASR model loaded (\(Int(Date().timeIntervalSince(t0)))s)")
+                } catch {
+                    daemonLog("⚠️ live: streaming ASR model failed to load: \(error) → retried per recording")
+                }
+            }
+        }
         recording = Task {
             // Before recoverInterrupted: it would mark the other process's live recording as ended.
             guard await acquireRunLock() else { return }
@@ -121,7 +161,7 @@ private func recordLoop(store: RecordingStore, onFinished: @escaping @Sendable (
         while !Task.isCancelled { try? await Task.sleep(for: .seconds(3600)) }
         return
     }
-    let controller = RecordingController(store: store, makeRecorder: { CaptureRecorder(log: daemonLog) }, log: daemonLog)
+    let controller = RecordingController(store: store, makeRecorder: { CaptureRecorder(log: daemonLog, makeLive: makeLivePreview) }, log: daemonLog)
     controller.onFinished = onFinished
     let calendar = CalendarReader()
     var config = AgentConfig()
@@ -176,7 +216,7 @@ private func transcribeLoop(
     store: RecordingStore, queue: UploadQueue, worker: UploadWorker,
     kicks: AsyncStream<Void>, kick: AsyncStream<Void>.Continuation
 ) async {
-    let me = NSFullUserName().isEmpty ? "Me" : NSFullUserName()
+    let me = micSpeakerName()
     let processor = RecordingProcessor(
         store: store,
         transcribe: { mic, system in

@@ -164,6 +164,8 @@ export interface TranscriptListItem {
   segmentCount: number;
   /** null if the device was since revoked. */
   deviceName: string | null;
+  /** Present only while there's just a live preview (no final transcript yet); `endedAt` = last chunk received. */
+  live?: LiveStatus;
 }
 
 export interface TranscriptListResponse {
@@ -229,6 +231,58 @@ export interface SpeakerSuggestionsResponse {
   job: JobState | null;
   /** label → voice/calendar match for unnamed labels, computed now (no job). */
   matches: Record<string, SpeakerMatch>;
+}
+
+// ---- Live transcription (preview while recording) ----
+
+/** mic = the local user; system = everyone else (not diarized live). */
+export type LiveStream = "mic" | "system";
+
+/** live = chunks arriving; ended = recording stopped, final transcript still being made on the Mac. */
+export type LiveStatus = "live" | "ended";
+
+/**
+ * POST /api/device/transcripts/:id/live (bearer) → 200 LiveChunkResponse. Best-effort preview while recording; the
+ * final TranscriptUpload with the same id replaces it (live data is then deleted). Idempotent on (id, stream, seq).
+ * Deleted transcript → 410. DELETE same path (bearer) → 204 = recording discarded, drop the preview.
+ */
+export interface LiveChunk {
+  stream: LiveStream;
+  /** Per stream, from 0. */
+  seq: number;
+  /** Recording start (segment times are relative to it). */
+  startedAt: string;
+  /** Latest calendar snapshot; null = ad-hoc. */
+  meeting: MeetingMeta | null;
+  /** Confirmed (no longer changing) segments; may be empty. */
+  segments: TranscriptSegment[];
+  /** true = recording stopped; omitted otherwise. */
+  ended?: boolean;
+}
+
+export interface LiveChunkResponse {
+  /** false = the final transcript is already stored; stop sending. */
+  accepted: boolean;
+}
+
+export interface LiveSegment extends TranscriptSegment {
+  stream: LiveStream;
+}
+
+/**
+ * GET /api/transcripts/:id/live?after=<cursor> (web). Only segments received after `after` (default 0 = all);
+ * pass the returned `cursor` next time. `final` = the real transcript exists → load GET /api/transcripts/:id.
+ */
+export interface LiveTranscriptResponse {
+  id: string;
+  status: LiveStatus | "final";
+  startedAt: string;
+  meeting: MeetingMeta | null;
+  deviceName: string | null;
+  /** Server time of the last chunk; null when final. */
+  lastChunkAt: string | null;
+  segments: LiveSegment[];
+  cursor: number;
 }
 
 // ---- Search ----

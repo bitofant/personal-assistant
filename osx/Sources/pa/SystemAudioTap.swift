@@ -13,7 +13,7 @@ final class SystemAudioTap {
     private(set) var writer: WavWriter?
 
     /// `name` shows up in Core Audio tools (HALLab, `log stream`) → tells test-capture and `pa run` taps apart.
-    func start(writingTo url: URL, name: String = "pa test-capture") throws {
+    func start(writingTo url: URL, name: String = "pa test-capture", sink: (@Sendable (AVAudioPCMBuffer) -> Void)? = nil) throws {
         // No exclusions: pa plays no audio itself.
         let desc = CATapDescription(stereoGlobalTapButExcludeProcesses: [])
         desc.uuid = UUID()
@@ -49,7 +49,7 @@ final class SystemAudioTap {
             throw CoreAudioError(what: "tap format unsupported by AVAudioFormat", status: -1)
         }
         print("system: tap format \(describe(format))")
-        let w = try WavWriter(url: url, format: format)
+        let w = try WavWriter(url: url, format: format, sink: sink)
         writer = w
 
         try check(AudioDeviceCreateIOProcIDWithBlock(&procID, aggregateID, queue) { _, input, _, _, _ in

@@ -229,6 +229,35 @@ export const USER_MIGRATIONS = [
   );
   CREATE INDEX speaker_embeddings_model ON speaker_embeddings(model);
   `,
+  // Live preview while recording. Apart from `transcripts`: no summary/search/speaker matching on partial text.
+  // Deleted when the final transcript arrives; live_chunks = idempotency per (stream, seq), even for empty chunks.
+  `
+  CREATE TABLE live_transcripts (
+    id TEXT PRIMARY KEY,
+    device_id TEXT NOT NULL,
+    started_at TEXT NOT NULL,
+    meeting TEXT,
+    ended INTEGER NOT NULL DEFAULT 0,
+    created_at INTEGER NOT NULL,
+    last_chunk_at INTEGER NOT NULL
+  );
+  CREATE TABLE live_chunks (
+    transcript_id TEXT NOT NULL REFERENCES live_transcripts(id) ON DELETE CASCADE,
+    stream TEXT NOT NULL,
+    seq INTEGER NOT NULL,
+    PRIMARY KEY (transcript_id, stream, seq)
+  );
+  CREATE TABLE live_segments (
+    id INTEGER PRIMARY KEY,
+    transcript_id TEXT NOT NULL REFERENCES live_transcripts(id) ON DELETE CASCADE,
+    stream TEXT NOT NULL,
+    start REAL NOT NULL,
+    end REAL NOT NULL,
+    speaker TEXT,
+    text TEXT NOT NULL
+  );
+  CREATE INDEX live_segments_transcript ON live_segments(transcript_id, id);
+  `,
 ] as const;
 
 // Part of shipped migration 4 (append-only): changing what's indexed = new migration that drops + rebuilds.
