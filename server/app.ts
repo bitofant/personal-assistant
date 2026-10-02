@@ -3,6 +3,8 @@ import type {
   DeviceInfo,
   DeviceListResponse,
   HealthResponse,
+  LiveChunkResponse,
+  LiveTranscriptResponse,
   InstructionsResponse,
   LlmStatusResponse,
   MeResponse,
@@ -26,6 +28,7 @@ import { Devices } from "./devices.js";
 import { Store } from "./db.js";
 import { jobState, JobQueue, JobRunner, type JobHandler, type RunnerOptions } from "./jobs.js";
 import { deleteInstruction, listInstructions, listSeries, parseInstructionTarget, parseInstructionText, putInstruction } from "./instructions.js";
+import { discardLive, getLive, ingestLiveChunk, listLive, MAX_LIVE_CHUNK_BYTES, parseCursor, parseLiveChunk, purgeStaleLive } from "./live.js";
 import { createLlm, routeChoices, type Llm } from "./llm.js";
 import { parseSearchRequest, searchTranscripts } from "./search.js";
 import { effectiveChoice, getSummaryLlm, parseRouteChoice, setSummaryLlm } from "./settings.js";
@@ -34,7 +37,7 @@ import { ingestSpeakers, speakerMatches } from "./speakerMatch.js";
 import { clearSpeakerSuggestions, getSpeakerSuggestions, SUGGEST_SPEAKERS_JOB, suggestSpeakersHandler } from "./speakerSuggestions.js";
 import { getSummary, SUMMARIZE_JOB, summarizeHandler, type SummarizePayload } from "./summaries.js";
 import { bearerToken, HttpError, isRecord, readJson, sendError, sendJson, sendNoContent } from "./http.js";
-import { deleteTranscript, deviceUploadStats, getTranscript, transcriptExists, listTranscripts, MAX_TRANSCRIPT_BYTES, parseTranscriptUpload, upsertTranscript } from "./transcripts.js";
+import { deleteTranscript, deviceUploadStats, getTranscript, transcriptExists, listTranscripts, MAX_TRANSCRIPT_BYTES, parseTranscriptId, parseTranscriptUpload, upsertTranscript } from "./transcripts.js";
 
 export interface AppOptions {
   dataDir: string;
@@ -167,11 +170,37 @@ export function createApp(opts: AppOptions): App {
     sendJson(res, result satisfies TranscriptUploadResponse, result.created ? 201 : 200);
   });
 
+  // Live preview while recording; the final upload above replaces it.
+  route("POST", "/api/device/transcripts/:id/live", async ({ req, res, params }) => {
+    const device = devices.requireActive(req);
+    const id = parseTranscriptId(params[0]);
+    const chunk = parseLiveChunk((await readJson(req, MAX_LIVE_CHUNK_BYTES)).value);
+    sendJson(res, ingestLiveChunk(store.user(device.userId), device.id, id, chunk, now()) satisfies LiveChunkResponse);
+  });
+  route("DELETE", "/api/device/transcripts/:id/live", ({ req, res, params }) => {
+    const device = devices.requireActive(req);
+    discardLive(store.user(device.userId), parseTranscriptId(params[0]));
+    sendNoContent(res);
+  });
+
   // ---- transcripts (web) ----
   route("GET", "/api/transcripts", ({ req, res }) => {
     const user = auth.requireUser(req);
-    const transcripts = listTranscripts(store.user(user.id), devices.names(user.id));
+    const db = store.user(user.id);
+    // Lazy: no sweep over every user's DB; a stale preview only matters when someone looks.
+    purgeStaleLive(db, now());
+    const names = devices.names(user.id);
+    const transcripts = [...listTranscripts(db, names), ...listLive(db, names)].sort((a, b) => b.startedAt.localeCompare(a.startedAt));
     sendJson(res, { transcripts } satisfies TranscriptListResponse);
+  });
+  route("GET", "/api/transcripts/:id/live", ({ req, res, params }) => {
+    const user = auth.requireUser(req);
+    const db = store.user(user.id);
+    purgeStaleLive(db, now());
+    const after = parseCursor(new URL(req.url ?? "/", "http://x").searchParams.get("after"));
+    const live = getLive(db, params[0].toLowerCase(), after, devices.names(user.id));
+    if (!live) throw new HttpError(404, "No such transcript.");
+    sendJson(res, live satisfies LiveTranscriptResponse);
   });
   route("GET", "/api/transcripts/:id", ({ req, res, params }) => {
     const user = auth.requireUser(req);

@@ -2,12 +2,12 @@
 # Guided first-Mac run = all of osx/CHECKLIST.md: runs every step, pauses when you need to act, asks y/n where only
 # a human can judge, logs everything to ~/pa-test-capture/report-<stamp>/ (+ .tgz) to bring to the dev box.
 # usage: osx/mac-check.sh [--from STAGE | --only STAGE] [--seconds N] [--server URL] [--account NAME] [--tunnel SSH_HOST]
-# stages: prereqs build capture bench transcribe pair upload queue daemon
+# stages: prereqs build capture bench transcribe pair upload queue daemon live
 # --tunnel: script runs `ssh -L 4200:localhost:4200 HOST` itself (server = http://localhost:4200) and can cut it
 # for the outage test. bash 3.2 (stock macOS).
 set -uo pipefail
 
-STAGES="prereqs build capture bench transcribe pair upload queue daemon"
+STAGES="prereqs build capture bench transcribe pair upload queue daemon live"
 from= only= seconds=30 server= account= tunnel=
 while [ $# -gt 0 ]; do
   case "$1" in
@@ -367,6 +367,41 @@ st_daemon() {
   grep -q '^recording ' "$report/daemon-queue.log" && fail "recordings left untranscribed → daemon-queue.log" || pass "no recordings left"
 }
 
+# Live preview (streaming ASR → server while recording). Lag = daemon's own measurement (speech → server accept).
+st_live() {
+  need_build
+  [ -n "$server" ] || need_server
+  need_paired
+  local log="$report/live.log" id
+  if launchctl print "gui/$(id -u)/com.bitofant.pa" >/dev/null 2>&1; then
+    pause "The LaunchAgent is installed: this test needs it stopped. Run osx/install.sh --uninstall in another terminal."
+  fi
+  : > "$log"
+  start_daemon "$log"
+  # First run downloads the model (same Parakeet v3 files as the offline pass → usually cached already).
+  wait_for 300 "streaming ASR model loaded" grep -q 'live: streaming ASR model loaded' "$log"
+  grep -q 'live: streaming ASR model failed' "$log" && fail "live model failed to load → live.log"
+  pause "Start a call (as in the daemon stage) with the other side talking (or a video playing). Press a key once it runs."
+  wait_for 30 "recording started" grep -qE 'recording [0-9a-f-]+ started' "$log"
+  wait_for 60 "live preview reaches the server" grep -q 'preview streaming to server' "$log"
+  id=$(grep -oE 'recording [0-9a-f-]{36} started' "$log" | tail -1 | awk '{print $2}')
+  pause "Open $server/#/t/$id in a browser (or the ● live row under Transcripts). For ~60 s: count slowly \"one … two … three …\" and watch when each number shows up."
+  ask "Your words appear under your name within ~10 s of saying them"
+  ask "The other side's words appear as 'Others' within ~10 s"
+  ask "Live text reads OK: no repeated or cut-off words every ~5 s (chunk edges)"
+  pause "END the call, keep the page open, press a key."
+  wait_for 200 "recording stopped" grep -qE 'stopped \(inactive\)' "$log"
+  wait_for 60 "live preview finished" grep -q "live $id: done" "$log"
+  grep "live $id: done" "$log" | sed 's/^[^ ]* /    /' | tee -a "$summary"
+  grep -q "live $id: done, lag" "$log" || fail "no lag measured (nothing sent?) → live.log"
+  ask "The page said 'Recording stopped … final transcript is being made on the Mac'"
+  wait_for 300 "final transcript uploaded" after_line "$log" "live $id: done" ' (uploaded|replaced) '
+  ask "The page switched to the final transcript by itself (Speaker N labels, summary panel)"
+  ask "Activity Monitor during the call: pa's memory + CPU looked reasonable (note the numbers)"
+  grep -E "live $id: ⚠️" "$log" | sed 's/^/    /'
+  stop_daemon
+}
+
 note "mac-check $(date '+%Y-%m-%d %H:%M:%S %z') → $report"
 want prereqs && { stage prereqs "Mac + toolchain"; st_prereqs; }
 want build && { stage build "swift test + build.sh (first compile of the FluidAudio code)"; st_build; }
@@ -377,4 +412,5 @@ want pair && { stage pair "pair this Mac with the server"; st_pair; }
 want upload && { stage upload "first real transcript on the server"; st_upload; }
 want queue && { stage queue "upload queue + pa run: outage, revoke, re-pair, delete"; st_queue; }
 want daemon && { stage daemon "pa run: detect a call → record → transcribe → upload; clean SIGTERM"; st_daemon; }
+want live && { stage live "live preview: words in the web UI while recording, lag"; st_live; }
 finish

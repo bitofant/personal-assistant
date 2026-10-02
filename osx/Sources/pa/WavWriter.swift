@@ -36,21 +36,25 @@ final class WavWriter: @unchecked Sendable {
         }
     }
 
-    init(url: URL, format: AVAudioFormat) throws {
+    /// Gets every buffer that was written (live preview); called outside the lock, on the capture thread.
+    private let sink: (@Sendable (AVAudioPCMBuffer) -> Void)?
+
+    init(url: URL, format: AVAudioFormat, sink: (@Sendable (AVAudioPCMBuffer) -> Void)? = nil) throws {
         self.format = format
+        self.sink = sink
         file = try AVAudioFile(
             forWriting: url, settings: format.settings,
             commonFormat: format.commonFormat, interleaved: format.isInterleaved)
     }
 
     func write(_ buffer: AVAudioPCMBuffer) {
-        lock.withLock {
+        let written = lock.withLock { () -> Bool in
             _stats.callbacks += 1
-            guard buffer.frameLength > 0 else { _stats.empty += 1; return }
-            guard _error == nil else { return }
-            do { try file.write(from: buffer) } catch { _error = error; return }
+            guard buffer.frameLength > 0 else { _stats.empty += 1; return false }
+            guard _error == nil else { return false }
+            do { try file.write(from: buffer) } catch { _error = error; return false }
             _frames += AVAudioFramePosition(buffer.frameLength)
-            guard let data = buffer.floatChannelData else { return }
+            guard let data = buffer.floatChannelData else { return true }
             // Interleaved: one pointer holding frames*channels samples.
             let channels = buffer.format.isInterleaved ? 1 : Int(buffer.format.channelCount)
             let perChannel = Int(buffer.frameLength) * (buffer.format.isInterleaved ? Int(buffer.format.channelCount) : 1)
@@ -64,7 +68,10 @@ final class WavWriter: @unchecked Sendable {
                     _stats.channelPeaks[ch] = max(_stats.channelPeaks[ch], samples.reduce(0) { max($0, abs($1)) })
                 }
             }
+            return true
         }
+        // Only what reached the WAV: preview timeline stays aligned with the file (= offline transcript).
+        if written { sink?(buffer) }
     }
 
     /// Aggregate IOProc input. Can hold >1 buffer (sub-device input streams and/or tap split per channel),

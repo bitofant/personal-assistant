@@ -17,11 +17,15 @@ public struct AgentConfig: Codable, Equatable, Sendable {
     public var ignoreMicApps: [String]?
     /// Days to keep a recording's audio after its transcript is queued; nil = delete right away.
     public var keepAudioDays: Int?
+    /// Live transcript preview while recording (streaming ASR, uploaded every few s). nil = on; false = off.
+    public var liveTranscription: Bool?
 
     public init(
         micDeviceUID: String? = nil, serverURL: String? = nil, account: String? = nil, deviceId: String? = nil,
-        workCalendars: [String]? = nil, ignoreMicApps: [String]? = nil, keepAudioDays: Int? = nil
+        workCalendars: [String]? = nil, ignoreMicApps: [String]? = nil, keepAudioDays: Int? = nil,
+        liveTranscription: Bool? = nil
     ) {
+        self.liveTranscription = liveTranscription
         self.micDeviceUID = micDeviceUID
         self.serverURL = serverURL
         self.account = account
@@ -44,6 +48,10 @@ public func parseAgentConfig(_ data: Data) throws -> AgentConfig {
     c.ignoreMicApps = list(c.ignoreMicApps)
     if let d = c.keepAudioDays, d <= 0 { c.keepAudioDays = nil }
     return c
+}
+
+extension AgentConfig {
+    public var liveEnabled: Bool { liveTranscription ?? true }
 }
 
 public func encodeAgentConfig(_ c: AgentConfig) throws -> Data {

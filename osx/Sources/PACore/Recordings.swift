@@ -137,6 +137,18 @@ public protocol AudioRecorder: AnyObject {
     func start(mic: URL, system: URL) throws
     /// Idempotent. Returns problems worth logging (all-zero stream = permission missing, write errors).
     func stop() -> [String]
+    /// Live preview hooks (default no-op). `prepare`: right before `start`, with the sidecar.
+    func prepare(_ meta: RecordingMeta)
+    /// Ad-hoc call relabelled / event snapshot refreshed.
+    func meetingChanged(_ meeting: MeetingMeta?)
+    /// Right before `stop()` when the recording is thrown away (too short): drop its preview too.
+    func willDiscard()
+}
+
+public extension AudioRecorder {
+    func prepare(_ meta: RecordingMeta) {}
+    func meetingChanged(_ meeting: MeetingMeta?) {}
+    func willDiscard() {}
 }
 
 /// Executes `detectStep` actions. Not thread-safe: `pa` drives it from the main actor only.
@@ -194,6 +206,7 @@ public final class RecordingController {
                 return
             }
             let r = makeRecorder()
+            r.prepare(meta)
             do {
                 try r.start(mic: store.micURL(id), system: store.systemURL(id))
                 current = (meta, r)
@@ -207,9 +220,12 @@ public final class RecordingController {
             guard var c = current else { return }
             c.meta.meeting = meetingMeta(event)
             current = c
+            c.recorder?.meetingChanged(c.meta.meeting)
             try? store.save(c.meta)
             log("recording \(c.meta.id) belongs to \(describeMeeting(c.meta.meeting))")
         case .stop(let session, let reason):
+            // Before stop: the preview's end marker carries the final event snapshot.
+            current?.recorder?.meetingChanged(session.event.map(meetingMeta))
             guard var c = finishCapture() else { return }
             // Latest snapshot: moved/extended events were refreshed by the detector.
             c.meta.meeting = session.event.map(meetingMeta)
@@ -223,6 +239,7 @@ public final class RecordingController {
                 log("recording \(c.meta.id) stopped, ⚠️ can't update sidecar: \(error)")
             }
         case .discard:
+            current?.recorder?.willDiscard()
             guard let c = finishCapture() else { return }
             do { try store.delete(c.meta.id) } catch { log("recording \(c.meta.id): ⚠️ delete failed: \(error)") }
             log("recording \(c.meta.id) discarded (too short)")

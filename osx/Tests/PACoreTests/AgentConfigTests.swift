@@ -17,6 +17,8 @@ import Testing
         let c = try parseAgentConfig(Data(#"{"ignoreMicApps":[" com.apple.siri ",""],"keepAudioDays":7}"#.utf8))
         #expect(c.ignoreMicApps == ["com.apple.siri"])
         #expect(c.keepAudioDays == 7)
+        #expect(c.liveEnabled) // default on
+        #expect(try !parseAgentConfig(Data(#"{"liveTranscription":false}"#.utf8)).liveEnabled)
         let d = try parseAgentConfig(Data(#"{"ignoreMicApps":[" "],"keepAudioDays":0}"#.utf8))
         #expect(d.ignoreMicApps == nil)
         #expect(d.keepAudioDays == nil)

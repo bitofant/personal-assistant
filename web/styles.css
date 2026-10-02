@@ -527,6 +527,21 @@ mark {
   font-weight: 600;
 }
 
+.live-badge {
+  color: var(--danger);
+  background: color-mix(in srgb, var(--danger) 15%, var(--raised));
+  margin-left: 6px;
+}
+
+h2 .badge {
+  vertical-align: middle;
+}
+
+/* Live preview: your own lines (mic) tinted so "you vs others" reads at a glance. */
+.live-segments p.live-mic .speaker {
+  color: var(--accent);
+}
+
 .offset {
   color: var(--muted);
   font-variant-numeric: tabular-nums;

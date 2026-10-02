@@ -20,6 +20,7 @@ import { renderMarkdown } from "../shared/markdown.js";
 import { api, ApiError } from "./api.js";
 import { emptySearch, parseSearchHash, parseTranscriptHash, transcriptHash } from "./routes.js";
 import { Account } from "./Account.js";
+import { LiveTranscript } from "./Live.js";
 import { Search, SearchBox } from "./Search.js";
 import { deviceActivityLine, REVOKE_HELP, revokeConfirmText } from "./devices.js";
 import { displaySpeaker, matchFor, matchReason, nameSuggestions, speakerEdits, speakerLabels, suggestionFor, suggestJobView } from "./speakers.js";
@@ -208,7 +209,10 @@ function Transcripts() {
           {items.map((t) => (
             <tr key={t.id}>
               <td>{formatDateTime(t.startedAt)}</td>
-              <td><a href={transcriptHash(t.id)}>{t.title ?? "(ad-hoc call)"}</a></td>
+              <td>
+                <a href={transcriptHash(t.id)}>{t.title ?? "(ad-hoc call)"}</a>
+                {t.live && <span className={t.live === "live" ? "badge live-badge" : "badge"}>{t.live === "live" ? "● live" : "processing"}</span>}
+              </td>
               <td>{formatDuration(t.startedAt, t.endedAt)}</td>
               <td className="wide-only">{formatValue(t.attendeeCount)}</td>
               <td className="wide-only">{formatValue(t.calendarName)}</td>
@@ -224,10 +228,16 @@ function Transcripts() {
 function Transcript({ id, seg }: { id: string; seg: number | null }) {
   const [t, setT] = useState<TranscriptDetail | null>(null);
   const [error, setError] = useState<string | null>(null);
+  // 404 = maybe still recording → live preview (it calls `load` again once the final transcript exists).
+  const [live, setLive] = useState(false);
   const target = useRef<HTMLParagraphElement>(null);
   const load = useCallback(() => {
-    api<TranscriptDetail>(`/transcripts/${encodeURIComponent(id)}`).then(setT, (e: Error) => setError(e.message));
+    api<TranscriptDetail>(`/transcripts/${encodeURIComponent(id)}`).then(
+      (d) => (setT(d), setLive(false)),
+      (e: Error) => (e instanceof ApiError && e.status === 404 ? setLive(true) : setError(e.message)),
+    );
   }, [id]);
+  const missing = useCallback(() => (setLive(false), setError("No such transcript.")), []);
   useEffect(load, [load]);
   // Deep link from search: bring the matched segment into view once loaded.
   // Braces: newer Chromium's scrollIntoView returns a Promise, which React rejects as an effect cleanup.
@@ -236,6 +246,7 @@ function Transcript({ id, seg }: { id: string; seg: number | null }) {
   }, [t, seg]);
 
   if (error) return <ErrorLine error={error} />;
+  if (live) return <LiveTranscript id={id} onFinal={load} onMissing={missing} />;
   if (!t) return <p className="muted">Loading…</p>;
   const m = t.meeting;
   return (

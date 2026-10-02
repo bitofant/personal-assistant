@@ -9,6 +9,7 @@ import type {
   DeviceListResponse,
   DeviceMeResponse,
   InstructionsResponse,
+  LiveTranscriptResponse,
   LlmStatusResponse,
   PairResponse,
   SearchResponse,
@@ -635,6 +636,66 @@ describe("API flow", () => {
     expect(ex.transcripts.find((x) => x.transcript.id === C)!.transcript.meeting!.attendees[0].isSelf).toBe(true);
 
     for (const id of [A, B, C]) expect((await fetch(`${base}/api/transcripts/${id}`, { method: "DELETE", headers: { cookie } })).status).toBe(204);
+  });
+
+  it("live preview: chunks → list + cursor poll → final upload replaces it; late chunk refused; delete → 410; discard", async () => {
+    const liveChunk = JSON.parse(readFileSync("shared/fixtures/live-chunk.json", "utf8"));
+    const id = "1e1e1e1e-0000-4000-8000-00000000a11e";
+    const livePath = `/api/device/transcripts/${id}/live`;
+    const getLive = async (after = 0) => {
+      const r = await fetch(`${base}/api/transcripts/${id}/live?after=${after}`, { headers: { cookie } });
+      return { status: r.status, body: (await r.json()) as LiveTranscriptResponse };
+    };
+    const listed = async () => ((await (await fetch(`${base}/api/transcripts`, { headers: { cookie } })).json()) as TranscriptListResponse).transcripts.find((t) => t.id === id);
+
+    expect((await post(livePath, liveChunk)).status).toBe(401);
+    expect((await post("/api/device/transcripts/nope/live", liveChunk, bearer)).status).toBe(400);
+    expect((await post(livePath, { ...liveChunk, stream: "x" }, bearer)).status).toBe(400);
+    const first = await post(`/api/device/transcripts/${id.toUpperCase()}/live`, liveChunk, bearer); // id canonicalized
+    expect(first.status).toBe(200);
+    expectFixtureShape("live-chunk-response.json", await first.json());
+    expect((await fetch(`${base}/api/transcripts/${id}/live`)).status).toBe(401);
+    expect((await fetch(`${base}/api/transcripts/${id}/live`, { headers: bearer })).status).toBe(401); // device token ≠ web session
+
+    const a = await getLive();
+    expect(a.status).toBe(200);
+    expect(a.body).toMatchObject({ id, status: "live", deviceName: "Work Mac", segments: [{ stream: "system", speaker: "Others" }] });
+    expect(await listed()).toMatchObject({ live: "live", title: "Alice / Bob 1:1", segmentCount: 1 });
+    // Detail = 404 while only the preview exists (web then shows the live view).
+    expect((await fetch(`${base}/api/transcripts/${id}`, { headers: { cookie } })).status).toBe(404);
+
+    expect((await post(livePath, liveChunk, bearer)).status).toBe(200); // retry: no duplicate
+    const mic = { ...liveChunk, stream: "mic", seq: 0, segments: [{ start: 5, end: 6, speaker: "Alice Example", text: "Yes, release first." }] };
+    expect((await post(livePath, mic, bearer)).status).toBe(200);
+    const b = await getLive(a.body.cursor);
+    expect(b.body.segments.map((s) => s.text)).toEqual(["Yes, release first."]);
+    expect((await post(livePath, { ...liveChunk, seq: 1, segments: [], ended: true }, bearer)).status).toBe(200);
+    expect((await getLive(b.body.cursor)).body).toMatchObject({ status: "ended", segments: [] });
+
+    const final = { ...upload, id };
+    expect((await post("/api/device/transcripts", final, bearer)).status).toBe(201);
+    expect((await getLive()).body).toMatchObject({ status: "final", segments: [] });
+    expect((await listed())?.live).toBeUndefined();
+    const late = await post(livePath, { ...liveChunk, seq: 2 }, bearer);
+    expect(await late.json()).toEqual({ accepted: false });
+    expect((await listed())?.live).toBeUndefined();
+
+    // Deleting from the web while recording: the Mac's next chunk + final upload get 410.
+    const id2 = "1e1e1e1e-0000-4000-8000-00000000a12e";
+    expect((await post(`/api/device/transcripts/${id2}/live`, liveChunk, bearer)).status).toBe(200);
+    expect((await fetch(`${base}/api/transcripts/${id2}`, { method: "DELETE", headers: { cookie } })).status).toBe(204);
+    expect((await fetch(`${base}/api/transcripts/${id2}/live`, { headers: { cookie } })).status).toBe(404);
+    expect((await post(`/api/device/transcripts/${id2}/live`, { ...liveChunk, seq: 1 }, bearer)).status).toBe(410);
+    expect((await post("/api/device/transcripts", { ...upload, id: id2 }, bearer)).status).toBe(410);
+
+    // Discarded recording (too short): preview dropped, no tombstone.
+    const id3 = "1e1e1e1e-0000-4000-8000-00000000a13e";
+    expect((await post(`/api/device/transcripts/${id3}/live`, liveChunk, bearer)).status).toBe(200);
+    expect((await fetch(`${base}/api/device/transcripts/${id3}/live`, { method: "DELETE", headers: bearer })).status).toBe(204);
+    expect((await fetch(`${base}/api/device/transcripts/${id3}/live`, { method: "DELETE", headers: { cookie } })).status).toBe(401);
+    expect((await fetch(`${base}/api/transcripts/${id3}/live`, { headers: { cookie } })).status).toBe(404);
+
+    expect((await fetch(`${base}/api/transcripts/${id}`, { method: "DELETE", headers: { cookie } })).status).toBe(204);
   });
 
   it("disabling the user in config cuts off both web session and device", async () => {

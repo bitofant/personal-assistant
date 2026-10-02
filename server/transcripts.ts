@@ -14,6 +14,13 @@ import { HttpError, isRecord } from "./http.js";
 export const MAX_TRANSCRIPT_BYTES = 20 * 1024 * 1024;
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
 
+/** Path id → canonical lowercase UUID, else 400. */
+export function parseTranscriptId(v: string): string {
+  const id = v.trim().toLowerCase();
+  if (!UUID_RE.test(id)) throw new HttpError(400, "id must be a UUID");
+  return id;
+}
+
 /** Validate + normalize an upload (pure). Unknown fields ignored for forward compat; raw body is kept verbatim anyway. */
 export function parseTranscriptUpload(raw: unknown): TranscriptUpload {
   const errors: string[] = [];
@@ -32,19 +39,7 @@ export function parseTranscriptUpload(raw: unknown): TranscriptUpload {
     else meeting = parseMeeting(r.meeting, errors);
   }
 
-  const segments: TranscriptSegment[] = [];
-  if (!Array.isArray(r.segments)) errors.push("segments must be an array");
-  else
-    for (const [i, s] of r.segments.entries()) {
-      const at = `segments[${i}]`;
-      if (!isRecord(s)) { errors.push(`${at} must be an object`); continue; }
-      const ok = isTime(s.start) && isTime(s.end) && (s.end as number) >= (s.start as number);
-      if (!ok) errors.push(`${at}: start/end must be seconds >= 0 with end >= start`);
-      if (typeof s.text !== "string") errors.push(`${at}.text must be a string`);
-      if (s.speaker != null && typeof s.speaker !== "string") errors.push(`${at}.speaker must be a string or null`);
-      if (errors.length > 20) break; // don't build a megabyte error message
-      segments.push({ start: s.start as number, end: s.end as number, speaker: str(s.speaker), text: String(s.text) });
-    }
+  const segments = parseSegments(r.segments, errors);
 
   const asrModel = str(r.asrModel);
   if (!asrModel) errors.push("asrModel required");
@@ -57,6 +52,24 @@ export function parseTranscriptUpload(raw: unknown): TranscriptUpload {
   // Key only when present: `data` (= transcript without it) must stay byte-identical for old clients' retries.
   if (speakerEmbeddings) t.speakerEmbeddings = speakerEmbeddings;
   return t;
+}
+
+/** Shared by uploads and live chunks. */
+export function parseSegments(v: unknown, errors: string[]): TranscriptSegment[] {
+  const segments: TranscriptSegment[] = [];
+  if (!Array.isArray(v)) errors.push("segments must be an array");
+  else
+    for (const [i, s] of v.entries()) {
+      const at = `segments[${i}]`;
+      if (!isRecord(s)) { errors.push(`${at} must be an object`); continue; }
+      const ok = isTime(s.start) && isTime(s.end) && (s.end as number) >= (s.start as number);
+      if (!ok) errors.push(`${at}: start/end must be seconds >= 0 with end >= start`);
+      if (typeof s.text !== "string") errors.push(`${at}.text must be a string`);
+      if (s.speaker != null && typeof s.speaker !== "string") errors.push(`${at}.speaker must be a string or null`);
+      if (errors.length > 20) break; // don't build a megabyte error message
+      segments.push({ start: s.start as number, end: s.end as number, speaker: str(s.speaker), text: String(s.text) });
+    }
+  return segments;
 }
 
 export const MAX_EMBEDDING_DIM = 4096;
@@ -87,7 +100,7 @@ function parseSpeakerEmbeddings(v: unknown, segments: TranscriptSegment[], error
   return Object.keys(out).length ? out : null;
 }
 
-function parseMeeting(m: Record<string, unknown>, errors: string[]): MeetingMeta {
+export function parseMeeting(m: Record<string, unknown>, errors: string[]): MeetingMeta {
   for (const k of ["calendarName", "eventId", "seriesId", "title"])
     if (m[k] != null && typeof m[k] !== "string") errors.push(`meeting.${k} must be a string or null`);
   const start = isoTime(m.start, "meeting.start", errors);
@@ -121,7 +134,7 @@ function parsePerson(p: unknown, at: string, errors: string[]): Person | null {
 }
 
 /** Trimmed non-empty string, else null (missing ≠ ""). */
-function str(v: unknown): string | null {
+export function str(v: unknown): string | null {
   return typeof v === "string" && v.trim() ? v.trim() : null;
 }
 
@@ -135,7 +148,7 @@ export function parseIsoTime(v: unknown): string | null {
   return ok ? new Date(v as string).toISOString() : null;
 }
 
-function isoTime(v: unknown, at: string, errors: string[]): string | null {
+export function isoTime(v: unknown, at: string, errors: string[]): string | null {
   const t = parseIsoTime(v);
   if (t === null) errors.push(`${at} must be an ISO 8601 timestamp with zone`);
   return t;
@@ -157,33 +170,37 @@ export function upsertTranscript(
   const { speakerEmbeddings: _embeddings, ...content } = t;
   const data = JSON.stringify(content);
   const prev = db.prepare("SELECT data FROM transcripts WHERE id = ?").get(t.id) as { data: string } | undefined;
-  db.prepare(
-    `INSERT INTO transcripts (id, device_id, started_at, ended_at, title, calendar_name, event_id, series_id,
-       attendee_count, segment_count, raw, data, received_at, updated_at)
-     VALUES (@id, @deviceId, @startedAt, @endedAt, @title, @calendarName, @eventId, @seriesId,
-       @attendeeCount, @segmentCount, @raw, @data, @now, @now)
-     ON CONFLICT(id) DO UPDATE SET device_id = excluded.device_id, started_at = excluded.started_at,
-       ended_at = excluded.ended_at, title = excluded.title, calendar_name = excluded.calendar_name,
-       event_id = excluded.event_id, series_id = excluded.series_id, attendee_count = excluded.attendee_count,
-       segment_count = excluded.segment_count, raw = excluded.raw, data = excluded.data,
-       -- updated_at = content last changed; drives summary staleness, so a no-op re-upload keeps it.
-       updated_at = CASE WHEN data = excluded.data THEN updated_at ELSE excluded.updated_at END`,
-  ).run({
-    id: t.id,
-    deviceId,
-    startedAt: t.startedAt,
-    endedAt: t.endedAt,
-    title: t.meeting?.title ?? null,
-    calendarName: t.meeting?.calendarName ?? null,
-    eventId: t.meeting?.eventId ?? null,
-    seriesId: t.meeting?.seriesId ?? null,
-    // Ad-hoc call: attendee count unknown, not 0.
-    attendeeCount: t.meeting ? t.meeting.attendees.length : null,
-    segmentCount: t.segments.length,
-    raw,
-    data,
-    now,
-  });
+  db.transaction(() => {
+    // Final transcript replaces the live preview (cascade drops its chunks + segments).
+    db.prepare("DELETE FROM live_transcripts WHERE id = ?").run(t.id);
+    db.prepare(
+      `INSERT INTO transcripts (id, device_id, started_at, ended_at, title, calendar_name, event_id, series_id,
+         attendee_count, segment_count, raw, data, received_at, updated_at)
+       VALUES (@id, @deviceId, @startedAt, @endedAt, @title, @calendarName, @eventId, @seriesId,
+         @attendeeCount, @segmentCount, @raw, @data, @now, @now)
+       ON CONFLICT(id) DO UPDATE SET device_id = excluded.device_id, started_at = excluded.started_at,
+         ended_at = excluded.ended_at, title = excluded.title, calendar_name = excluded.calendar_name,
+         event_id = excluded.event_id, series_id = excluded.series_id, attendee_count = excluded.attendee_count,
+         segment_count = excluded.segment_count, raw = excluded.raw, data = excluded.data,
+         -- updated_at = content last changed; drives summary staleness, so a no-op re-upload keeps it.
+         updated_at = CASE WHEN data = excluded.data THEN updated_at ELSE excluded.updated_at END`,
+    ).run({
+      id: t.id,
+      deviceId,
+      startedAt: t.startedAt,
+      endedAt: t.endedAt,
+      title: t.meeting?.title ?? null,
+      calendarName: t.meeting?.calendarName ?? null,
+      eventId: t.meeting?.eventId ?? null,
+      seriesId: t.meeting?.seriesId ?? null,
+      // Ad-hoc call: attendee count unknown, not 0.
+      attendeeCount: t.meeting ? t.meeting.attendees.length : null,
+      segmentCount: t.segments.length,
+      raw,
+      data,
+      now,
+    });
+  })();
   return { id: t.id, created: !prev, changed: prev?.data !== data };
 }
 
@@ -245,13 +262,15 @@ export function transcriptExists(db: Db, id: string): boolean {
 }
 
 /**
- * Deletes a transcript + (FK cascade) its summary and search rows (FTS via their delete trigger), and leaves a
+ * Deletes a transcript (or live preview) + (FK cascade) its summary and search rows (FTS via their delete trigger), and leaves a
  * tombstone so re-uploads get 410. False = no such transcript. Caller drops app.db jobs (other DB).
  */
 export function deleteTranscript(db: Db, id: string, now: number): boolean {
   const canonical = id.toLowerCase();
   return db.transaction(() => {
-    if (db.prepare("DELETE FROM transcripts WHERE id = ?").run(canonical).changes === 0) return false;
+    // Live preview too: deleting a meeting still being recorded also stops further chunks + the final upload (410).
+    const live = db.prepare("DELETE FROM live_transcripts WHERE id = ?").run(canonical).changes;
+    if (db.prepare("DELETE FROM transcripts WHERE id = ?").run(canonical).changes + live === 0) return false;
     db.prepare("INSERT OR REPLACE INTO deleted_transcripts (id, deleted_at) VALUES (?, ?)").run(canonical, now);
     return true;
   })();

@@ -120,3 +120,33 @@ public struct TranscriptUploadResponse: Codable, Equatable, Sendable {
     public var id: String
     public var created: Bool
 }
+
+/// Live preview while recording (best effort; the final `TranscriptUpload`, same id, replaces it).
+public enum LiveStream: String, Codable, Equatable, Sendable {
+    case mic, system
+}
+
+/// POST /api/device/transcripts/:id/live. Idempotent on (id, stream, seq).
+public struct LiveChunk: Codable, Equatable, Sendable {
+    public var stream: LiveStream
+    public var seq: Int
+    public var startedAt: String
+    public var meeting: MeetingMeta?
+    public var segments: [TranscriptSegment]
+    /// true = recording stopped; nil otherwise (omitted).
+    public var ended: Bool?
+
+    public init(stream: LiveStream, seq: Int, startedAt: String, meeting: MeetingMeta?, segments: [TranscriptSegment], ended: Bool? = nil) {
+        self.stream = stream
+        self.seq = seq
+        self.startedAt = startedAt
+        self.meeting = meeting
+        self.segments = segments
+        self.ended = ended
+    }
+}
+
+public struct LiveChunkResponse: Codable, Equatable, Sendable {
+    /// false = final transcript already on the server; stop sending.
+    public var accepted: Bool
+}
