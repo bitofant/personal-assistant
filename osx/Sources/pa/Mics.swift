@@ -2,10 +2,7 @@ import CoreAudio
 import Foundation
 import PACore
 
-func agentConfigURL() -> URL {
-    FileManager.default.homeDirectoryForCurrentUser
-        .appending(path: "Library/Application Support/\(bundleID)/config.json")
-}
+func agentConfigURL() -> URL { AgentPaths.default.config }
 
 /// Missing file = defaults; unreadable/invalid = error (never silently overwrite the user's file).
 func loadAgentConfig() throws -> AgentConfig {

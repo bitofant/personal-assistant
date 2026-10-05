@@ -2,12 +2,12 @@
 # Guided first-Mac run = all of osx/CHECKLIST.md: runs every step, pauses when you need to act, asks y/n where only
 # a human can judge, logs everything to ~/pa-test-capture/report-<stamp>/ (+ .tgz) to bring to the dev box.
 # usage: osx/mac-check.sh [--from STAGE | --only STAGE] [--seconds N] [--server URL] [--account NAME] [--tunnel SSH_HOST]
-# stages: prereqs build capture bench transcribe pair upload queue daemon note live
+# stages: prereqs build capture bench transcribe pair upload queue daemon note menu live
 # --tunnel: script runs `ssh -L 4200:localhost:4200 HOST` itself (server = http://localhost:4200) and can cut it
 # for the outage test. bash 3.2 (stock macOS).
 set -uo pipefail
 
-STAGES="prereqs build capture bench transcribe pair upload queue daemon note live"
+STAGES="prereqs build capture bench transcribe pair upload queue daemon note menu live"
 from= only= seconds=30 server= account= tunnel=
 while [ $# -gt 0 ]; do
   case "$1" in
@@ -191,6 +191,8 @@ st_build() {
   run build "$osx/build.sh" || { echo "Fix the errors (note each fix + why), then: osx/mac-check.sh --from build"; finish; }
   if codesign -dv "$osx/build/PA.app" 2>&1 | grep -q '^Identifier=com.bitofant.pa$'; then pass "signed as com.bitofant.pa"
   else fail "PA.app not signed as com.bitofant.pa"; fi
+  if codesign -dv "$osx/build/PAMenu.app" 2>&1 | grep -q '^Identifier=com.bitofant.pa.menu$'; then pass "signed as com.bitofant.pa.menu"
+  else fail "PAMenu.app not signed as com.bitofant.pa.menu"; fi
 }
 
 st_capture() {
@@ -421,6 +423,52 @@ st_note() {
   stop_daemon
 }
 
+# Menu bar app (PAMenu.app): state from the daemon's files; pause/resume + note toggle write the same request files.
+st_menu() {
+  need_build
+  local log="$report/menu.log" menu="$osx/build/PAMenu.app"
+  [ -x "$menu/Contents/MacOS/pa-menu" ] || { fail "no $menu (osx/build.sh)"; return; }
+  if launchctl print "gui/$(id -u)/com.bitofant.pa" >/dev/null 2>&1; then
+    pause "The LaunchAgent is installed: this test needs it stopped. Run osx/install.sh --uninstall in another terminal."
+  fi
+  "$pa" resume >/dev/null 2>&1
+  : > "$log"
+  start_daemon "$log"
+  wait_for 30 "pa run polls mic/apps" grep -q 'meeting apps:' "$log"
+  open "$menu"
+  ask "A waveform icon is in the menu bar; its menu says 'Watching for meetings'"
+  run menu-status "$pa" status
+  expect menu-status '^recorder: Watching for meetings' "pa status shows the same line"
+
+  # 1. Pause mid-call: recording stopped + kept, nothing restarts while paused.
+  pause "Start a call (or a Voice Memos recording) with audio playing; press a key once it runs."
+  wait_for 30 "recording started" grep -qE 'recording [0-9a-f-]+ started' "$log"
+  ask "Icon = record dot; menu says 'Recording: … · N min'"
+  echo "  keep the call going 70 s (≥60 s → kept, not discarded) …"; sleep 70
+  pause "Menu → Pause recording (keep the call running), then press a key."
+  wait_for 15 "pause picked up" grep -q 'recording paused' "$log"
+  wait_for 15 "call recording stopped + kept" grep -q 'stopped (paused)' "$log"
+  sleep 10
+  after_line "$log" 'stopped \(paused\)' 'recording [0-9a-f-]+ started' && fail "a recording restarted while paused" || pass "nothing restarted while paused"
+  ask "Icon = pause; menu says 'Recording paused' and offers 'Resume recording'"
+
+  # 2. Notes still work while paused.
+  pause "End the call. Then menu → Start note, say a sentence (~15 s), and press a key."
+  wait_for 20 "note started from the menu" grep -q 'started: spoken note (mic only)' "$log"
+  ask "Icon = mic; menu says 'Recording note · … (meetings paused)' and offers 'Stop note'"
+  pause "Menu → Stop note, then press a key."
+  wait_for 20 "note stopped from the menu" grep -q 'stopped (noteStopped)' "$log"
+
+  # 3. CLI resume reflects in the menu; daemon gone → warning icon; Quit.
+  run menu-resume "$pa" resume && expect menu-resume 'resumed' "pa resume"
+  wait_for 15 "resume picked up" grep -q 'recording resumed' "$log"
+  ask "Within ~3 s the icon is the waveform again (menu: 'Watching for meetings')"
+  stop_daemon
+  ask "Within ~3 s the icon is a warning triangle; menu says 'pa run isn't running', 'Start note' greyed out"
+  pause "Menu → Quit PA menu, then press a key."
+  pgrep -x pa-menu >/dev/null && fail "pa-menu still running after Quit" || pass "Quit exits pa-menu"
+}
+
 # Live preview (streaming ASR → server while recording). Lag = daemon's own measurement (speech → server accept).
 st_live() {
   need_build
@@ -467,5 +515,6 @@ want upload && { stage upload "first real transcript on the server"; st_upload; 
 want queue && { stage queue "upload queue + pa run: outage, revoke, re-pair, delete"; st_queue; }
 want daemon && { stage daemon "pa run: detect a call → record → transcribe → upload; clean SIGTERM"; st_daemon; }
 want note && { stage note "pa note: mic-only spoken notes, toggle, call takes over"; st_note; }
+want menu && { stage menu "menu bar app: state icon, pause/resume, note toggle, quit"; st_menu; }
 want live && { stage live "live preview: words in the web UI while recording, lag"; st_live; }
 finish

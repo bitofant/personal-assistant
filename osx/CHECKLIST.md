@@ -22,7 +22,7 @@ It walks through every step, and stops when you need to do something ("start the
 code in the web UI", "revoke the device") or judge something (it plays the recordings back, shows transcripts;
 answer `y` / `n` + a note / `s` skip). Everything it can check itself it checks.
 
-Stages: `prereqs build capture bench transcribe pair upload queue daemon note live`. `q` or Ctrl-C quits (report still written).
+Stages: `prereqs build capture bench transcribe pair upload queue daemon note menu live`. `q` or Ctrl-C quits (report still written).
 
 - **Next Mac session** (stages up to `queue` done 2026-09-30): `--only build`, then `--only queue` (410 drop step
   wasn't exercised), then `--only daemon` (~15 min; needs a call or any app using the mic, plus audio playing).
@@ -31,11 +31,15 @@ Stages: `prereqs build capture bench transcribe pair upload queue daemon note li
   (`lag p50 … p95 …`, target ≤10 s). New uncompiled code: `Sources/pa/LiveEngine.swift` (+ sink plumbing in
   `WavWriter` / `MicCapture` / `SystemAudioTap` / `CaptureRecorder`). After `daemon`: `--only note` (~10 min,
   video + a call app): `pa note` start/stop/toggle, mic-only, a call ending the note. New uncompiled code:
-  `Sources/pa/Note.swift` + note polling in `Run.swift`.
+  `Sources/pa/Note.swift` + note polling in `Run.swift`. After `note`: `--only menu` (~5 min, a call app):
+  menu bar icon states, Pause/Resume (call stopped + kept), Start/Stop note while paused, `pa pause`/`pa resume`,
+  Quit. New uncompiled code: `Sources/pa-menu/main.swift`, `Sources/pa/Pause.swift`, pause polling in `Run.swift`.
 - **Build fails** (expected: the `pa run` daemon code has never been compiled; errors in `Sources/pa/Run.swift` /
   `Calendars.swift` / `Signals.swift` / `CaptureRecorder.swift`): fix, note each fix + why, then
   `osx/mac-check.sh --only build …`
-- After `daemon` passes: `osx/install.sh` (LaunchAgent, starts at login; log `~/Library/Logs/com.bitofant.pa.log`).
+- After `daemon` passes: `osx/install.sh` (LaunchAgents for `pa run` + the menu bar app, start at login; log
+  `~/Library/Logs/com.bitofant.pa.log`). Check once: menu → Quit stays quit until next login; `kill` of `pa-menu`
+  brings it back (KeepAlive on crash only).
 - Redo one stage: `--only capture`, `--only queue`, …; longer recording: `--seconds 600`
 - Other mic: `osx/pick-mic.sh`
 - `--tunnel` = the script runs `ssh -L 4200:localhost:4200 <host>` and cuts it for the outage test; without it,

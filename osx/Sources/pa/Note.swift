@@ -10,7 +10,7 @@ func note(_ action: NoteAction) async throws {
     case .toggle:
         try await note(store.load() == nil ? .start : .stop)
     case .start:
-        guard daemonIsRecording() else {
+        guard daemonIsRunning(lock: runLockURL()) else {
             eprint("pa note: `pa run` isn't recording (LaunchAgent not loaded? see osx/install.sh) → no note")
             exit(1)
         }
@@ -52,16 +52,4 @@ func note(_ action: NoteAction) async throws {
             print("pa note: requested at \(isoTimestamp(r.requestedAt)), not recording (is `pa run` running?)")
         }
     }
-}
-
-/// `pa run` holds run.lock while recording: taking it here means nobody is.
-private func daemonIsRecording() -> Bool {
-    let fd = Darwin.open(runLockURL().path, O_RDWR | O_CREAT, 0o644)
-    guard fd >= 0 else { return true } // can't tell → let the 15 s wait decide
-    defer { close(fd) }
-    if flock(fd, LOCK_EX | LOCK_NB) == 0 {
-        flock(fd, LOCK_UN)
-        return false
-    }
-    return true
 }

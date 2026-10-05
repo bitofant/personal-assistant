@@ -53,6 +53,9 @@ import Testing
         #expect(try parseCommand(["run"]) == .run(record: true))
         #expect(try parseCommand(["run", "--no-record"]) == .run(record: false))
         #expect(try parseCommand(["queue"]) == .queue)
+        #expect(try parseCommand(["pause"]) == .pause)
+        #expect(try parseCommand(["resume"]) == .resume)
+        #expect(throws: UsageError.self) { try parseCommand(["pause", "1h"]) }
         #expect(try parseCommand(["calendars"]) == .calendars)
         #expect(throws: UsageError.self) { try parseCommand(["run", "x"]) }
         #expect(throws: UsageError.self) { try parseCommand(["run", "--no-record", "x"]) }

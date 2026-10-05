@@ -16,6 +16,8 @@ dependencies.append(.package(url: "https://github.com/FluidInference/FluidAudio"
 targets.append(.executableTarget(
     name: "pa",
     dependencies: ["PACore", .product(name: "FluidAudio", package: "FluidAudio")]))
+// Menu bar app (separate PAMenu.app): reads/writes the daemon's files only; no FluidAudio, no TCC.
+targets.append(.executableTarget(name: "pa-menu", dependencies: ["PACore"]))
 #endif
 
 let package = Package(

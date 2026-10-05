@@ -114,7 +114,7 @@ To transcribe a recording on the Mac (Parakeet v3 speech-to-text + speaker diari
 ```sh
 ./pa calendars           # Source/Name of every calendar (first run asks for Calendar access)
 ./pa run                 # foreground, through PA.app (asks for the mic); Ctrl-C stops cleanly
-./install.sh             # LaunchAgent: starts at login, restarts on crash; log ~/Library/Logs/com.bitofant.pa.log
+./install.sh             # LaunchAgents (pa run + menu bar app): start at login, restart on crash; log ~/Library/Logs/com.bitofant.pa.log
 ./install.sh --uninstall
 ```
 
@@ -135,6 +135,10 @@ Settings live in `~/Library/Application Support/com.bitofant.pa/config.json`. `p
 ```
 
 A note records only the mic (no system audio, so a video playing doesn't end up in it), is kept however short, and runs until you stop it (at most 2 h). It shows up in the web UI as `(spoken note)`, with a summary in the form of notes, todos and open questions; you can change that in Settings → instructions for "Spoken note". If a call starts (another app takes the mic), the note ends and the call is recorded as usual. While a meeting is being recorded, `pa note start` is refused. `pa note` needs `pa run` to be running and exits 1 if it isn't. The live preview of a note is still titled `(ad-hoc call)`.
+
+**Menu bar app.** `PAMenu.app` (built by `osx/build.sh`, started at login by `install.sh`) shows what `pa run` is doing: a waveform while it watches for meetings, a record dot during a meeting (with title and duration), a mic during a note, a pause symbol while paused, and a warning triangle when `pa run` isn't running. Its menu has Start/Stop note, Pause/Resume recording, the upload queue count, and links to the web UI and the log. Quit keeps it closed until the next login.
+
+**Pausing.** `./pa pause` (or Pause recording in the menu) stops automatic meeting recording until `./pa resume`. A meeting being recorded is stopped and kept, and the pause survives restarts. Spoken notes still work while paused. `./pa status` shows the current state on its first line.
 
 Recordings sit in `recordings/` (`<id>-mic.wav`, `<id>-system.wav`, `<id>.json`) until they are transcribed. If `pa` is killed mid-recording, the next start transcribes what was saved. A transcription that fails 3 times is left there and listed by `pa queue`. Only one `pa run` records at a time: a second one waits until the first exits. `pa run --no-record` only uploads the queue.
 
