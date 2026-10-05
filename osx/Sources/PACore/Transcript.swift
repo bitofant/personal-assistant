@@ -276,11 +276,11 @@ public func encodeTranscriptUpload(_ u: TranscriptUpload) throws -> Data {
 
 /// `duration` = longest stream (seconds); `id` lowercased to match server normalization.
 public func makeTranscriptUpload(
-    id: UUID, startedAt: Date, duration: Double, meeting: MeetingMeta?, transcription t: Transcription
+    id: UUID, startedAt: Date, duration: Double, meeting: MeetingMeta?, kind: TranscriptKind? = nil, transcription t: Transcription
 ) -> TranscriptUpload {
     TranscriptUpload(
         id: id.uuidString.lowercased(), startedAt: isoTimestamp(startedAt),
         endedAt: isoTimestamp(startedAt.addingTimeInterval(duration)), meeting: meeting,
         segments: t.segments, asrModel: t.asrModel, diarizationModel: t.diarizationModel,
-        speakerEmbeddings: t.speakerEmbeddings)
+        speakerEmbeddings: t.speakerEmbeddings, kind: kind)
 }

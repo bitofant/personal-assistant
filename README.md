@@ -127,6 +127,15 @@ Settings live in `~/Library/Application Support/com.bitofant.pa/config.json`. `p
 
 **Live preview.** While a meeting is recording, `pa run` also transcribes it as it goes (streaming Parakeet, 5 s chunks) and sends the text to the server every few seconds. The transcript list marks it `● live`; its page shows the text a few seconds behind real time (target ≤10 s; not yet measured on a Mac), with your mic as you and everything else as `Others`. When the recording stops, the page says so and switches by itself to the final transcript once the Mac has made and uploaded it (with speakers, summary, search). The preview is best effort: while the server is unreachable the Mac keeps the last ~5 min of preview text and sends it once it's back; older preview text is lost. The recording and the final transcript don't depend on it. Deleting a live transcript in the web UI also stops the Mac from uploading that meeting. Previews whose final transcript never arrives are dropped after 24 h.
 
+**Spoken notes.** To capture thoughts outside meetings (e.g. while reading Slack), ask the running `pa run` to record a note:
+
+```sh
+./pa note toggle         # start, or stop the running note (bind this to a key with Shortcuts/Raycast)
+./pa note start | stop | status
+```
+
+A note records only the mic (no system audio, so a video playing doesn't end up in it), is kept however short, and runs until you stop it (at most 2 h). It shows up in the web UI as `(spoken note)`, with a summary in the form of notes, todos and open questions; you can change that in Settings → instructions for "Spoken note". If a call starts (another app takes the mic), the note ends and the call is recorded as usual. While a meeting is being recorded, `pa note start` is refused. `pa note` needs `pa run` to be running and exits 1 if it isn't. The live preview of a note is still titled `(ad-hoc call)`.
+
 Recordings sit in `recordings/` (`<id>-mic.wav`, `<id>-system.wav`, `<id>.json`) until they are transcribed. If `pa` is killed mid-recording, the next start transcribes what was saved. A transcription that fails 3 times is left there and listed by `pa queue`. Only one `pa run` records at a time: a second one waits until the first exits. `pa run --no-record` only uploads the queue.
 
 Grant permissions before installing the LaunchAgent, because macOS only prompts for an interactive launch: run `./pa calendars` and `./pa test-capture --seconds 5`, then `./pa run` once.

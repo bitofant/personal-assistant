@@ -1,6 +1,6 @@
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import type { LiveSegment, LiveTranscriptResponse } from "../shared/api.js";
-import { formatDateTime, formatOffset, formatValue } from "../shared/format.js";
+import { formatDateTime, formatOffset, formatValue, transcriptTitle } from "../shared/format.js";
 import { api, ApiError } from "./api.js";
 import { isFollowing, liveLines, liveStatusView, mergeLive } from "./liveState.js";
 import { ErrorLine } from "./ui.js";
@@ -63,7 +63,7 @@ export function LiveTranscript({ id, onFinal, onMissing }: { id: string; onFinal
   return (
     <article>
       <h2>
-        {m?.title ?? "(ad-hoc call)"} <span className={head.status === "live" ? "badge live-badge" : "badge"}>{head.status === "live" ? "● live" : "processing"}</span>
+        {transcriptTitle(m?.title)} <span className={head.status === "live" ? "badge live-badge" : "badge"}>{head.status === "live" ? "● live" : "processing"}</span>
       </h2>
       <p className="meta">
         {formatDateTime(head.startedAt)} · calendar {formatValue(m?.calendarName)} · device {formatValue(head.deviceName)}

@@ -2,6 +2,11 @@
 
 export const MISSING = "—";
 
+/** Transcript heading: calendar title, else what kind of untitled recording it is. */
+export function transcriptTitle(title: string | null | undefined, kind?: string | null): string {
+  return title ?? (kind === "note" ? "(spoken note)" : "(ad-hoc call)");
+}
+
 /** Seconds → "m:ss" or "h:mm:ss". */
 export function formatOffset(seconds: number | null | undefined): string {
   if (seconds == null || !Number.isFinite(seconds)) return MISSING;

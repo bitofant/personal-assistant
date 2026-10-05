@@ -28,6 +28,8 @@ struct PA {
                 try await listCalendars()
             case .queue:
                 try listQueue()
+            case .note(let action):
+                try await note(action)
             }
         } catch let e as UsageError {
             eprint("\(e)\n\n\(usage)")

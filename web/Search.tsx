@@ -1,6 +1,6 @@
 import { useEffect, useState, type FormEvent } from "react";
 import type { SearchResponse, TextPart } from "../shared/api.js";
-import { formatDateTime, formatDuration, formatOffset, formatValue } from "../shared/format.js";
+import { formatDateTime, formatDuration, formatOffset, formatValue, transcriptTitle } from "../shared/format.js";
 import { api } from "./api.js";
 import { hasSearchInput, searchApiPath, searchHash, transcriptHash, type SearchParams } from "./routes.js";
 import { ErrorLine } from "./ui.js";
@@ -83,7 +83,7 @@ function Results({ params }: { params: SearchParams }) {
         <article key={t.id} className="result">
           <div>
             <a href={transcriptHash(t.id)}>
-              <strong>{t.title ?? "(ad-hoc call)"}</strong>
+              <strong>{transcriptTitle(t.title, t.kind)}</strong>
             </a>{" "}
             <span className="muted">
               {formatDateTime(t.startedAt)} · {formatDuration(t.startedAt, t.endedAt)}

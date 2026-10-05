@@ -26,7 +26,7 @@ final class CaptureRecorder: AudioRecorder {
         live = nil
     }
 
-    func start(mic micURL: URL, system systemURL: URL) throws {
+    func start(mic micURL: URL, system systemURL: URL?) throws {
         live = meta.flatMap(makeLive)
         var errors: [String] = []
         let m = MicCapture()
@@ -39,13 +39,15 @@ final class CaptureRecorder: AudioRecorder {
             errors.append("mic: \(error)")
         }
         // After the mic: creating the tap aggregate reconfigures the mic engine (MicCapture restarts it).
-        let s = SystemAudioTap()
-        do {
-            try s.start(writingTo: systemURL, name: "pa run", sink: live?.sink(.system))
-            system = s
-        } catch {
-            s.stop()
-            errors.append("system: \(error)")
+        if let systemURL {
+            let s = SystemAudioTap()
+            do {
+                try s.start(writingTo: systemURL, name: "pa run", sink: live?.sink(.system))
+                system = s
+            } catch {
+                s.stop()
+                errors.append("system: \(error)")
+            }
         }
         if mic == nil && system == nil {
             live?.discard()

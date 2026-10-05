@@ -27,10 +27,10 @@ private final class FakeRecorder: AudioRecorder {
     func meetingChanged(_ meeting: MeetingMeta?) { hooks.append("meeting \(meeting?.title ?? "nil")") }
     func willDiscard() { hooks.append("discard") }
 
-    func start(mic: URL, system: URL) throws {
+    func start(mic: URL, system: URL?) throws {
         if failStart { throw UsageError("no tap") }
-        for u in [mic, system] { try Data([1]).write(to: u) }
-        started = [mic, system]
+        started = [mic, system].compactMap { $0 }
+        for u in started { try Data([1]).write(to: u) }
     }
 
     func stop() -> [String] {
@@ -45,6 +45,7 @@ private final class Harness {
     var recorders: [FakeRecorder] = []
     var logs: [String] = []
     var finished = 0
+    var cleared: [String] = []
     var failNextStart = false
     var ids = 0
     lazy var c: RecordingController = {
@@ -63,11 +64,12 @@ private final class Harness {
                 return UUID(uuidString: String(format: "00000000-0000-4000-8000-%012d", ids))!
             })
         c.onFinished = { [unowned self] in finished += 1 }
+        c.onClearNoteRequest = { [unowned self] in cleared.append($0) }
         return c
     }()
 
-    func step(_ min: Double, mic: Bool, app: Bool = false, events: [CalendarEvent] = []) {
-        c.step(DetectorInput(now: at(min), events: events, micInUse: mic, meetingAppRunning: app))
+    func step(_ min: Double, mic: Bool, app: Bool = false, events: [CalendarEvent] = [], note: NoteRequest? = nil) {
+        c.step(DetectorInput(now: at(min), events: events, micInUse: mic, meetingAppRunning: app, note: note))
     }
 
     func metas() throws -> [RecordingMeta] { try store.all().items }
@@ -145,6 +147,45 @@ private func noAudio(_ s: RecordingStore, _ n: Int) -> Bool { s.audio(id(n)).mic
         #expect(ms.map(\.meeting?.eventId) == ["a", "b"])
         #expect(ms[0].endedAt == at(30))
         #expect(ms[1].endedAt == nil)
+    }
+
+    @Test func spokenNoteIsMicOnlyAndKeptHoweverShort() throws {
+        let h = Harness()
+        let n = NoteRequest(id: "n1", requestedAt: at(0))
+        h.step(0, mic: false, note: n)
+        // No system tap: whatever plays on the Mac (Slack video, notification sounds) stays out of the note.
+        #expect(h.recorders[0].started == [h.store.micURL(id(1))])
+        #expect(try h.metas().first?.noteId == "n1")
+        #expect(try h.metas().first?.meeting == nil)
+        h.step(0.25, mic: false)
+        // 15 s note: kept (minActive is for inferred recordings only).
+        let m = try #require(try h.metas().first)
+        #expect(m.endedAt == at(0.25))
+        #expect(h.finished == 1)
+        #expect(h.logs.contains { $0.contains("stopped (noteStopped)") })
+    }
+
+    @Test func callTakingTheMicEndsNoteAndClearsRequest() throws {
+        let h = Harness()
+        let n = NoteRequest(id: "n1", requestedAt: at(0))
+        h.step(0, mic: false, note: n)
+        h.step(3, mic: true, note: n)
+        #expect(h.cleared == ["n1"])
+        #expect(h.recorders.count == 2)
+        let ms = try h.metas()
+        #expect(ms.map(\.noteId) == ["n1", nil])
+        #expect(ms[0].endedAt == at(3))
+        // The call: both streams.
+        #expect(h.recorders[1].started.count == 2)
+    }
+
+    @Test func shutdownKeepsShortNote() throws {
+        let h = Harness()
+        h.step(0, mic: false, note: NoteRequest(id: "n1", requestedAt: at(0)))
+        h.c.shutdown(now: at(0.2))
+        #expect(try h.metas().first?.endedAt == at(0.2))
+        // File left alone: restarted daemon resumes the note.
+        #expect(h.cleared.isEmpty)
     }
 
     @Test func captureFailureKeepsSessionWithoutAudio() throws {
