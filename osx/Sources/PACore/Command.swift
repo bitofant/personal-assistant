@@ -21,6 +21,9 @@ public enum Command: Equatable, Sendable {
     case queue
     /// Spoken note: ask the running `pa run` to record the mic (start/stop/toggle) or show its state.
     case note(NoteAction)
+    /// Stop/resume automatic meeting recording (`pause.json`; notes unaffected).
+    case pause
+    case resume
 }
 
 public struct TranscribeOptions: Equatable, Sendable {
@@ -77,6 +80,9 @@ public let usage = """
           Spoken note: the running `pa run` records the mic only (no system audio) until stopped; uploaded as a
           note (summarized as notes + todos). A call taking the mic ends it. Bind `toggle` to a key (Shortcuts).
           Exit 1 if `pa run` isn't recording or a meeting recording refused it.
+      pa pause | pa resume
+          Pause automatic meeting recording (a running one is stopped + kept) until resumed; spoken notes still
+          work. Same switch as the menu bar app. Persists across restarts.
       pa transcribe [DIR] [--stamp yyyyMMdd-HHmmss] [--me NAME] [--no-diarize] [--upload]
           Transcribe a test-capture recording (mic = you, system = diarized) → DIR/pa-<stamp>-transcript.json.
           Default: newest recording in ~/pa-test-capture; --me defaults to your macOS full name.
@@ -149,6 +155,9 @@ public func parseCommand(_ args: [String]) throws(UsageError) -> Command {
     case "note":
         guard args.count == 2, let a = NoteAction(rawValue: args[1]) else { throw UsageError("note needs start, stop, toggle or status") }
         return .note(a)
+    case "pause", "resume":
+        guard args.count == 1 else { throw UsageError("\(sub) takes no arguments") }
+        return sub == "pause" ? .pause : .resume
     case "upload":
         guard args.count == 2, !args[1].isEmpty else { throw UsageError("upload needs a transcript JSON file") }
         return .upload(args[1])

@@ -5,9 +5,7 @@ import PACore
 
 // Thin I/O for the upload queue: queue/worker logic lives in PACore (Linux-tested).
 
-func uploadQueueDir() -> URL {
-    agentConfigURL().deletingLastPathComponent().appending(path: "upload-queue", directoryHint: .isDirectory)
-}
+func uploadQueueDir() -> URL { AgentPaths.default.uploadQueue }
 
 /// Unpaired (no config/token) → 401-shaped error so the queue halts instead of retrying forever.
 private func pairedOr401() throws(ApiError) -> (server: URL, token: String) {
@@ -65,15 +63,13 @@ func daemonLog(_ s: String) {
     logger.notice("\(s, privacy: .public)")
 }
 
-func recordingsDir() -> URL {
-    agentConfigURL().deletingLastPathComponent().appending(path: "recordings", directoryHint: .isDirectory)
-}
+func recordingsDir() -> URL { AgentPaths.default.recordings }
 
-func noteRequestStore() -> NoteRequestStore {
-    NoteRequestStore(url: agentConfigURL().deletingLastPathComponent().appending(path: "note-request.json"))
-}
+func noteRequestStore() -> NoteRequestStore { NoteRequestStore(url: AgentPaths.default.noteRequest) }
 
-func runLockURL() -> URL { agentConfigURL().deletingLastPathComponent().appending(path: "run.lock") }
+func pauseStore() -> PauseStore { PauseStore(url: AgentPaths.default.pause) }
+
+func runLockURL() -> URL { AgentPaths.default.runLock }
 
 /// Detector cadence: mic/app/calendar polled every `stepSeconds`; calendar + config re-read every `calendarSeconds`.
 private let stepSeconds = 5.0
@@ -174,6 +170,8 @@ private func recordLoop(store: RecordingStore, onFinished: @escaping @Sendable (
         notes.clear(id: id)
         daemonLog("note request \(id) ended (call took the mic / meeting recording / expired)")
     }
+    let pause = pauseStore()
+    var wasPaused = false
     let calendar = CalendarReader()
     var config = AgentConfig()
     var configError: String?
@@ -216,14 +214,17 @@ private func recordLoop(store: RecordingStore, onFinished: @escaping @Sendable (
         let sig = "mic: \(describeClients(users)); meeting apps: \(apps.isEmpty ? "none" : apps.sorted().joined(separator: ", "))"
         if sig != lastSignals { daemonLog(sig) }
         lastSignals = sig
+        let paused = pause.load() != nil
+        if paused != wasPaused { daemonLog(paused ? "recording paused (meetings not recorded; notes still work)" : "recording resumed") }
+        wasPaused = paused
         var note = notes.load()
-        controller.step(DetectorInput(now: now, events: events, micInUse: !users.isEmpty, meetingAppRunning: !apps.isEmpty, note: note))
+        controller.step(DetectorInput(now: now, events: events, micInUse: !users.isEmpty, meetingAppRunning: !apps.isEmpty, note: note, paused: paused))
         note = notes.load()
-        // 1 s ticks: `pa note start/stop` applies within ~1 s instead of waiting out the 5 s step.
+        // 1 s ticks: `pa note` / `pa pause` (menu too) apply within ~1 s instead of waiting out the 5 s step.
         do {
             for _ in 0..<Int(stepSeconds) {
                 try await Task.sleep(for: .seconds(1))
-                if notes.load() != note { break }
+                if notes.load() != note || (pause.load() != nil) != paused { break }
             }
         } catch { break }
     }

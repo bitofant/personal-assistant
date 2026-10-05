@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Build signed, headless osx/build/PA.app. Usage: osx/build.sh [signing identity]
+# Build signed osx/build/PA.app (headless daemon) + osx/build/PAMenu.app (menu bar). Usage: osx/build.sh [signing identity]
 set -euo pipefail
 cd "$(dirname "$0")"
 
@@ -19,15 +19,21 @@ EOF
 fi
 
 swift build -c release --arch arm64
-BIN="$(swift build -c release --arch arm64 --show-bin-path)/pa"
+BINDIR="$(swift build -c release --arch arm64 --show-bin-path)"
 
-rm -rf "$APP"
-mkdir -p "$APP/Contents/MacOS"
-cp Info.plist "$APP/Contents/Info.plist"
-cp "$BIN" "$APP/Contents/MacOS/pa"
-codesign --force --sign "$IDENTITY" --identifier "$BUNDLE_ID" "$APP"
-codesign --verify --strict "$APP"
+# bundle <app> <plist> <executable> <bundle id>
+bundle() {
+  rm -rf "$1"
+  mkdir -p "$1/Contents/MacOS"
+  cp "$2" "$1/Contents/Info.plist"
+  cp "$BINDIR/$3" "$1/Contents/MacOS/$3"
+  codesign --force --sign "$IDENTITY" --identifier "$4" "$1"
+  codesign --verify --strict "$1"
+  echo "Built $1 ($(codesign -dv "$1" 2>&1 | grep -E '^Authority=' | head -1))"
+}
+bundle "$APP" Info.plist pa "$BUNDLE_ID"
+# Own bundle id: LSUIElement (status item) only here; PA.app stays LSBackgroundOnly + keeps its TCC grants.
+bundle build/PAMenu.app MenuInfo.plist pa-menu "$BUNDLE_ID.menu"
 
-echo "Built $APP ($(codesign -dv "$APP" 2>&1 | grep -E '^Authority=' | head -1))"
 echo "Run via LaunchServices so TCC attributes to PA.app, not Terminal:"
 echo "  open -W --stdout \$(tty) --stderr \$(tty) $PWD/$APP --args test-capture"

@@ -26,13 +26,19 @@ public struct DetectorInput: Sendable {
     public var meetingAppRunning: Bool
     /// `pa note start` request file; nil = none.
     public var note: NoteRequest?
+    /// `pa pause` / menu: no meeting recording (a running one is stopped + kept); notes unaffected.
+    public var paused: Bool
 
-    public init(now: Date, events: [CalendarEvent], micInUse: Bool, meetingAppRunning: Bool, note: NoteRequest? = nil) {
+    public init(
+        now: Date, events: [CalendarEvent], micInUse: Bool, meetingAppRunning: Bool, note: NoteRequest? = nil,
+        paused: Bool = false
+    ) {
         self.now = now
         self.events = events
         self.micInUse = micInUse
         self.meetingAppRunning = meetingAppRunning
         self.note = note
+        self.paused = paused
     }
 }
 
@@ -68,6 +74,8 @@ public enum StopReason: String, Equatable, Sendable {
     case meetingStarted
     /// Note: older than `noteMaxDuration`.
     case noteExpired
+    /// Meeting: user paused recording (`pa pause` / menu).
+    case paused
 }
 
 public enum RecorderAction: Equatable, Sendable {
@@ -126,6 +134,8 @@ public func detectStep(_ state: DetectorState, _ i: DetectorInput, timing t: Det
         refuseNote(n.id)
         note = nil
     }
+    // Before note handling: a note requested in the same poll as the pause can then start right away.
+    if i.paused, let cur = s.session, cur.note == nil { finish(cur, .paused) }
     if let cur = s.session, let id = cur.note {
         if note?.id != id {
             endNote(cur, i.note?.id == id ? .noteExpired : .noteStopped)
@@ -149,6 +159,8 @@ public func detectStep(_ state: DetectorState, _ i: DetectorInput, timing t: Det
         // A meeting is (about to be) recorded: one recording at a time, the call wins.
         refuseNote(n.id)
     }
+    // Paused: nothing below may start/keep a meeting (also not the call that just ended a note).
+    if i.paused { return (s, actions) }
 
     // App-only starts need a real meeting (someone invited) not already recorded: "Focus time" + Zoom open all day ≠ a call.
     let appStartable = i.events.filter { !$0.attendees.isEmpty && s.finished[$0.eventId] == nil }

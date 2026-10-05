@@ -30,6 +30,10 @@ struct PA {
                 try listQueue()
             case .note(let action):
                 try await note(action)
+            case .pause:
+                try setPaused(true)
+            case .resume:
+                try setPaused(false)
             }
         } catch let e as UsageError {
             eprint("\(e)\n\n\(usage)")

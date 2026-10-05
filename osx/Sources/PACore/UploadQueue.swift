@@ -86,6 +86,15 @@ public struct UploadQueueStore: Sendable {
         return (items, corrupt)
     }
 
+    /// Read-only counts for status displays (menu, `pa status`): no decoding, never moves files like `load` does.
+    public func counts() -> (pending: Int, parked: Int) {
+        func n(_ d: URL) -> Int {
+            ((try? FileManager.default.contentsOfDirectory(atPath: d.path)) ?? [])
+                .filter { $0.hasSuffix(".json") && !$0.hasPrefix(".") }.count
+        }
+        return (n(dir), n(failedDir))
+    }
+
     /// `failed/` contents for `pa queue`; unreadable = files moved there by `load` (or foreign).
     public func parked() throws -> (items: [QueuedUpload], unreadable: [String]) {
         guard FileManager.default.fileExists(atPath: failedDir.path) else { return ([], []) }

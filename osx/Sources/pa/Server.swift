@@ -74,6 +74,8 @@ func pair(server: URL, account: String, deviceName: String?) async throws {
 }
 
 func status() async throws {
+    // Local first: works unpaired / offline. Same line as the menu bar app.
+    print("recorder: \(readMenuStatus(AgentPaths.default).headline)")
     let (server, token, _) = try pairedServer()
     do {
         print(formatDeviceStatus(try await send(deviceMeRequest(server: server, token: token), as: DeviceMeResponse.self), server: server))
