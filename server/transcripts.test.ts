@@ -55,6 +55,13 @@ describe("parseTranscriptUpload", () => {
     expect(() => parseTranscriptUpload(f)).toThrow(/organizer.isSelf must be a boolean/);
   });
 
+  it("kind: note kept, meeting/null → absent (data of older uploads unchanged), anything else rejected", () => {
+    expect(parseTranscriptUpload({ ...fixture(), kind: "note" }).kind).toBe("note");
+    expect("kind" in parseTranscriptUpload({ ...fixture(), kind: "meeting" })).toBe(false);
+    expect("kind" in parseTranscriptUpload({ ...fixture(), kind: null })).toBe(false);
+    expect(() => parseTranscriptUpload({ ...fixture(), kind: "memo" })).toThrow(/kind must be/);
+  });
+
   it("speakerEmbeddings: validated, labels not in segments dropped, empty → absent", () => {
     const ok = parseTranscriptUpload({ ...fixture(), speakerEmbeddings: { "Speaker 2": [0.1, 0.2, 0.3], "Speaker 9": [1, 2, 3] } });
     expect(ok.speakerEmbeddings).toEqual({ "Speaker 2": [0.1, 0.2, 0.3] });
@@ -144,6 +151,9 @@ describe("transcript storage", () => {
     expect(list.map((x) => x.id)).toEqual([b.id, a.id]);
     expect(list[0]).toMatchObject({ attendeeCount: null, title: null, deviceName: null, segmentCount: 3 });
     expect(list[1]).toMatchObject({ attendeeCount: 2, title: "Alice / Bob 1:1", deviceName: "Mac" });
+    expect(list.some((x) => "kind" in x)).toBe(false);
+    upsertTranscript(d, "dev1", parseTranscriptUpload({ ...fixture(), meeting: null, kind: "note" }), "", 3);
+    expect(listTranscripts(d, new Map()).find((x) => x.id === a.id)?.kind).toBe("note");
   });
 
   describe("delete", () => {

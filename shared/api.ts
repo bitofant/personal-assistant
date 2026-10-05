@@ -129,6 +129,9 @@ export interface TranscriptSegment {
   text: string;
 }
 
+/** "note" = spoken note (`pa note`: user dictating, mic only, no event). Omitted = meeting/call. */
+export type TranscriptKind = "note";
+
 /** POST /api/device/transcripts (bearer). Idempotent on `id`: re-upload replaces. */
 export interface TranscriptUpload {
   /** Client-generated UUID. */
@@ -145,6 +148,8 @@ export interface TranscriptUpload {
    * the same model). Omitted/null = none. Upload only: stored apart from the transcript, never in TranscriptDetail.
    */
   speakerEmbeddings?: Record<string, number[]> | null;
+  /** Omitted/null/"meeting" = meeting/call (normalized to omitted). */
+  kind?: TranscriptKind;
 }
 
 /** POST /api/device/transcripts → 201 created / 200 replaced. */
@@ -164,6 +169,8 @@ export interface TranscriptListItem {
   segmentCount: number;
   /** null if the device was since revoked. */
   deviceName: string | null;
+  /** Present only for spoken notes. */
+  kind?: TranscriptKind;
   /** Present only while there's just a live preview (no final transcript yet); `endedAt` = last chunk received. */
   live?: LiveStatus;
 }
@@ -328,7 +335,7 @@ export interface TextPart {
 // ---- Summaries ----
 
 /** Descriptions + built-in instructions: `shared/instructions.ts`. */
-export type MeetingType = "1on1" | "standup" | "interview" | "external" | "meeting" | "adhoc";
+export type MeetingType = "1on1" | "standup" | "interview" | "external" | "meeting" | "adhoc" | "note";
 
 /** rule = metadata/title; series = reused from an earlier meeting of the same recurring series; llm = classified by the LLM; fallback = LLM gave no usable answer → "meeting". */
 export type MeetingTypeSource = "rule" | "series" | "llm" | "fallback";

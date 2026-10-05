@@ -88,6 +88,11 @@ public struct TranscriptSegment: Codable, Equatable, Sendable {
     }
 }
 
+/// nil on the wire (omitted) = meeting/call.
+public enum TranscriptKind: String, Codable, Equatable, Sendable {
+    case meeting, note
+}
+
 public struct TranscriptUpload: Codable, Equatable, Sendable {
     /// Client-generated UUID; re-upload with the same id replaces.
     public var id: String
@@ -99,11 +104,13 @@ public struct TranscriptUpload: Codable, Equatable, Sendable {
     public var diarizationModel: String?
     /// Segment speaker label → diarizer voice embedding (cluster centroid, `diarizationModel`'s space). nil = none (omitted).
     public var speakerEmbeddings: [String: [Float]]?
+    /// `.note` = spoken note (`pa note`); nil = meeting/call (omitted → old servers/fixtures unchanged).
+    public var kind: TranscriptKind?
 
     public init(
         id: String, startedAt: String, endedAt: String, meeting: MeetingMeta?,
         segments: [TranscriptSegment], asrModel: String, diarizationModel: String?,
-        speakerEmbeddings: [String: [Float]]? = nil
+        speakerEmbeddings: [String: [Float]]? = nil, kind: TranscriptKind? = nil
     ) {
         self.id = id
         self.startedAt = startedAt
@@ -113,6 +120,7 @@ public struct TranscriptUpload: Codable, Equatable, Sendable {
         self.asrModel = asrModel
         self.diarizationModel = diarizationModel
         self.speakerEmbeddings = speakerEmbeddings
+        self.kind = kind
     }
 }
 

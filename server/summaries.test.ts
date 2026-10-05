@@ -65,6 +65,9 @@ const reply = (text: string, extra: Partial<ChatResult> = {}): ChatResult => ({
 describe("classifyByRule", () => {
   it("no event = adhoc; title keywords win; 2 attendees = 1on1; otherwise unknown", () => {
     expect(classifyByRule(fixture({ meeting: null }))).toBe("adhoc");
+    // Spoken note: by rule, before anything else; never offered to the LLM.
+    expect(classifyByRule(fixture({ meeting: null, kind: "note" }))).toBe("note");
+    expect(buildClassifyPrompt(withMeeting("Q4 planning", 5))[0].content).not.toMatch(/- note:|- adhoc:/);
     expect(classifyByRule(fixture())).toBe("1on1");
     expect(classifyByRule(withMeeting("Weekly sync", 2))).toBe("1on1");
     for (const title of ["Alice 1:1", "alice/bob 1-1", "1on1 Bob", "One-on-one"]) expect(classifyByRule(withMeeting(title, 3))).toBe("1on1");

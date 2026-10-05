@@ -69,6 +69,12 @@ func recordingsDir() -> URL {
     agentConfigURL().deletingLastPathComponent().appending(path: "recordings", directoryHint: .isDirectory)
 }
 
+func noteRequestStore() -> NoteRequestStore {
+    NoteRequestStore(url: agentConfigURL().deletingLastPathComponent().appending(path: "note-request.json"))
+}
+
+func runLockURL() -> URL { agentConfigURL().deletingLastPathComponent().appending(path: "run.lock") }
+
 /// Detector cadence: mic/app/calendar polled every `stepSeconds`; calendar + config re-read every `calendarSeconds`.
 private let stepSeconds = 5.0
 private let calendarSeconds = 60.0
@@ -138,7 +144,7 @@ func run(record: Bool) async throws {
 private func acquireRunLock() async -> Bool {
     let dir = agentConfigURL().deletingLastPathComponent()
     try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
-    let fd = Darwin.open(dir.appending(path: "run.lock").path, O_RDWR | O_CREAT, 0o644)
+    let fd = Darwin.open(runLockURL().path, O_RDWR | O_CREAT, 0o644)
     guard fd >= 0 else {
         daemonLog("⚠️ can't open run.lock (errno \(errno)) → recording without the single-instance guard")
         return true
@@ -163,6 +169,11 @@ private func recordLoop(store: RecordingStore, onFinished: @escaping @Sendable (
     }
     let controller = RecordingController(store: store, makeRecorder: { CaptureRecorder(log: daemonLog, makeLive: makeLivePreview) }, log: daemonLog)
     controller.onFinished = onFinished
+    let notes = noteRequestStore()
+    controller.onClearNoteRequest = { id in
+        notes.clear(id: id)
+        daemonLog("note request \(id) ended (call took the mic / meeting recording / expired)")
+    }
     let calendar = CalendarReader()
     var config = AgentConfig()
     var configError: String?
@@ -205,8 +216,16 @@ private func recordLoop(store: RecordingStore, onFinished: @escaping @Sendable (
         let sig = "mic: \(describeClients(users)); meeting apps: \(apps.isEmpty ? "none" : apps.sorted().joined(separator: ", "))"
         if sig != lastSignals { daemonLog(sig) }
         lastSignals = sig
-        controller.step(DetectorInput(now: now, events: events, micInUse: !users.isEmpty, meetingAppRunning: !apps.isEmpty))
-        do { try await Task.sleep(for: .seconds(stepSeconds)) } catch { break }
+        var note = notes.load()
+        controller.step(DetectorInput(now: now, events: events, micInUse: !users.isEmpty, meetingAppRunning: !apps.isEmpty, note: note))
+        note = notes.load()
+        // 1 s ticks: `pa note start/stop` applies within ~1 s instead of waiting out the 5 s step.
+        do {
+            for _ in 0..<Int(stepSeconds) {
+                try await Task.sleep(for: .seconds(1))
+                if notes.load() != note { break }
+            }
+        } catch { break }
     }
     controller.shutdown(now: Date())
 }

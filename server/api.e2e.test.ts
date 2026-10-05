@@ -248,6 +248,21 @@ describe("API flow", () => {
         d = (await (await fetch(`${base}/api/transcripts/${id}`, { headers: { cookie } })).json()) as TranscriptDetail;
         return d.summaryJob?.status === "done" && d.summary?.stale === false;
       });
+
+      // Spoken note (`pa note`): kind round-trips, summarized with the note instructions, list marks it.
+      const noteId = "4f0c2a8e-2b1d-4c3e-9f5a-0d6b7e8f9a10";
+      expect((await post("/api/device/transcripts", { ...upload, id: noteId, meeting: null, kind: "note" }, bearer)).status).toBe(201);
+      await waitFor(async () => {
+        d = (await (await fetch(`${base}/api/transcripts/${noteId}`, { headers: { cookie } })).json()) as TranscriptDetail;
+        return d.summary !== null;
+      });
+      expect(d.kind).toBe("note");
+      expect(d.summary).toMatchObject({ meetingType: "note", meetingTypeSource: "rule", instructionsSource: "builtin:note" });
+      const list = (await (await fetch(`${base}/api/transcripts`, { headers: { cookie } })).json()) as TranscriptListResponse;
+      expect(list.transcripts.find((x) => x.id === noteId)?.kind).toBe("note");
+      expect(list.transcripts.find((x) => x.id === id)).not.toHaveProperty("kind");
+      // Later tests count this device's transcripts.
+      expect((await fetch(`${base}/api/transcripts/${noteId}`, { method: "DELETE", headers: { cookie } })).status).toBe(204);
     } finally {
       config = parseConfig({ users: ["alice"] });
       await new Promise((r) => llm.close(r));

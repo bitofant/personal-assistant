@@ -16,6 +16,7 @@ export const MEETING_TYPES = [
   { type: "external", label: "External", description: "with customers, partners or vendors from outside the organization" },
   { type: "meeting", label: "Meeting", description: "any other scheduled meeting (team, planning, review, …)" },
   { type: "adhoc", label: "Ad-hoc call", description: "unscheduled call without a calendar event" },
+  { type: "note", label: "Spoken note", description: "the user talking to themselves to capture thoughts (pa note), no one else present" },
 ] as const satisfies readonly MeetingTypeInfo[];
 
 export const MEETING_TYPE_IDS: readonly MeetingType[] = MEETING_TYPES.map((t) => t.type);
@@ -39,6 +40,8 @@ Sections: "## Candidate background", "## Topics and answers" (bullets), "## Cand
 Sections: "## Summary" (3-7 bullets), "## Their needs and concerns", "## Commitments made" (who promised what), ${ACTIONS}, "## Next steps".`,
   adhoc: `Summarize this unscheduled call (no calendar event, participants may be unknown).
 Sections: "## Summary" (3-7 bullets), ${ACTIONS}.`,
+  note: `This is a spoken note: one person thinking aloud for later reference (reacting to messages they read, ideas, reminders), not a conversation. Rewrite it as their written notes, in first person.
+Sections: "## Notes" (bullets grouped under short topic subheadings; keep specifics: names, numbers, systems, links mentioned), "## Todos" (only what the speaker said they or someone should do), "## Open questions".`,
 };
 
 export interface ResolvedInstructions {

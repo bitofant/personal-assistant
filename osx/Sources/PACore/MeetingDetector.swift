@@ -11,6 +11,8 @@ public struct DetectionTiming: Equatable, Sendable {
     public var dropoutGrace: TimeInterval = 2 * 60
     /// Active for less than this → discard (dictation, Siri, a quick mic test).
     public var minActive: TimeInterval = 60
+    /// Spoken note older than this → stopped + request cleared (forgotten `pa note stop`, stale file after a reboot).
+    public var noteMaxDuration: TimeInterval = 2 * 60 * 60
 
     public init() {}
 }
@@ -22,12 +24,15 @@ public struct DetectorInput: Sendable {
     /// ⚠️ In use by processes *other than pa*: counting our own capture would keep every recording alive forever.
     public var micInUse: Bool
     public var meetingAppRunning: Bool
+    /// `pa note start` request file; nil = none.
+    public var note: NoteRequest?
 
-    public init(now: Date, events: [CalendarEvent], micInUse: Bool, meetingAppRunning: Bool) {
+    public init(now: Date, events: [CalendarEvent], micInUse: Bool, meetingAppRunning: Bool, note: NoteRequest? = nil) {
         self.now = now
         self.events = events
         self.micInUse = micInUse
         self.meetingAppRunning = meetingAppRunning
+        self.note = note
     }
 }
 
@@ -38,12 +43,16 @@ public struct RecordingSession: Equatable, Sendable {
     public var lastActiveAt: Date
     /// Once the mic was used, only the mic counts as activity (app merely running ≠ still in the call).
     public var micSeen: Bool
+    /// Spoken note (request id): mic only, no event, runs until the request goes away.
+    public var note: String? = nil
 }
 
 public struct DetectorState: Equatable, Sendable {
     public var session: RecordingSession?
     /// eventId → window end: events whose recording already stopped; the app alone won't restart them.
     public var finished: [String: Date] = [:]
+    /// Note request already handled (ended by a meeting, refused, expired): never restarted even if its file lingers.
+    public var noteDone: String?
 
     public init() {}
 }
@@ -53,6 +62,12 @@ public enum StopReason: String, Equatable, Sendable {
     case inactive
     /// Current event is over and the next one has started (back-to-back).
     case nextMeeting
+    /// Note: `pa note stop` (request gone or replaced).
+    case noteStopped
+    /// Note: another app took the mic (call) → the meeting gets recorded instead.
+    case meetingStarted
+    /// Note: older than `noteMaxDuration`.
+    case noteExpired
 }
 
 public enum RecorderAction: Equatable, Sendable {
@@ -63,6 +78,10 @@ public enum RecorderAction: Equatable, Sendable {
     case stop(RecordingSession, StopReason)
     /// Too short to be a meeting: delete the audio.
     case discard(RecordingSession)
+    /// Spoken note: mic only, no calendar event, kept however short.
+    case startNote(id: String)
+    /// Delete the note request file if it still holds this id (handled: `pa note toggle` must start a new one next).
+    case clearNoteRequest(id: String)
 }
 
 public func detectStep(_ state: DetectorState, _ i: DetectorInput, timing t: DetectionTiming = DetectionTiming())
@@ -92,6 +111,45 @@ public func detectStep(_ state: DetectorState, _ i: DetectorInput, timing t: Det
         if let e = cur.event { s.finished[e.eventId] = e.end.addingTimeInterval(t.postRoll) }
         s.session = nil
     }
+    func endNote(_ cur: RecordingSession, _ reason: StopReason) {
+        actions.append(.stop(cur, reason))
+        s.session = nil
+    }
+    func refuseNote(_ id: String) {
+        s.noteDone = id
+        actions.append(.clearNoteRequest(id: id))
+    }
+
+    // Spoken notes first: an explicit request, so it beats inference — except a call (mic used by another app).
+    var note = i.note.flatMap { $0.id == s.noteDone ? nil : $0 }
+    if let n = note, now.timeIntervalSince(n.requestedAt) >= t.noteMaxDuration {
+        refuseNote(n.id)
+        note = nil
+    }
+    if let cur = s.session, let id = cur.note {
+        if note?.id != id {
+            endNote(cur, i.note?.id == id ? .noteExpired : .noteStopped)
+        } else if i.micInUse {
+            endNote(cur, .meetingStarted)
+            refuseNote(id)
+            note = nil
+        } else {
+            var c = cur
+            c.lastActiveAt = now
+            s.session = c
+            return (s, actions)
+        }
+    }
+    if let n = note {
+        if s.session == nil && !i.micInUse {
+            s.session = RecordingSession(startedAt: now, event: nil, lastActiveAt: now, micSeen: false, note: n.id)
+            actions.append(.startNote(id: n.id))
+            return (s, actions)
+        }
+        // A meeting is (about to be) recorded: one recording at a time, the call wins.
+        refuseNote(n.id)
+    }
+
     // App-only starts need a real meeting (someone invited) not already recorded: "Focus time" + Zoom open all day ≠ a call.
     let appStartable = i.events.filter { !$0.attendees.isEmpty && s.finished[$0.eventId] == nil }
 

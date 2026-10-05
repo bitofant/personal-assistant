@@ -12,15 +12,21 @@ public struct RecordingMeta: Codable, Equatable, Sendable {
     public var endedAt: Date?
     /// nil = ad-hoc.
     public var meeting: MeetingMeta?
+    /// Spoken note (`pa note`): its request id; nil = meeting/call. Uploaded as `kind: note`.
+    public var noteId: String?
     /// Counted *before* each transcription → a recording that crashes pa can't crash-loop it forever.
     public var attempts: Int
     public var lastError: String?
 
-    public init(id: String, startedAt: Date, endedAt: Date? = nil, meeting: MeetingMeta? = nil, attempts: Int = 0, lastError: String? = nil) {
+    public init(
+        id: String, startedAt: Date, endedAt: Date? = nil, meeting: MeetingMeta? = nil, noteId: String? = nil,
+        attempts: Int = 0, lastError: String? = nil
+    ) {
         self.id = id
         self.startedAt = startedAt
         self.endedAt = endedAt
         self.meeting = meeting
+        self.noteId = noteId
         self.attempts = attempts
         self.lastError = lastError
     }
@@ -134,7 +140,8 @@ public struct RecordingStore: Sendable {
 /// Mic + system audio capture into two files (`pa`: AVAudioEngine + Core Audio tap).
 public protocol AudioRecorder: AnyObject {
     /// May start only one stream (the other failing is logged by the implementation); throws if neither starts.
-    func start(mic: URL, system: URL) throws
+    /// system nil = mic only (spoken note: no tap, so nothing playing on the Mac ends up in the note).
+    func start(mic: URL, system: URL?) throws
     /// Idempotent. Returns problems worth logging (all-zero stream = permission missing, write errors).
     func stop() -> [String]
     /// Live preview hooks (default no-op). `prepare`: right before `start`, with the sidecar.
@@ -163,6 +170,8 @@ public final class RecordingController {
     private var current: (meta: RecordingMeta, recorder: (any AudioRecorder)?)?
     /// Called after a recording is kept (stopped, sidecar has endedAt): wake the transcription loop.
     public var onFinished: () -> Void = {}
+    /// Note request handled (`clearNoteRequest`): delete the request file if it still holds this id.
+    public var onClearNoteRequest: (String) -> Void = { _ in }
 
     public init(
         store: RecordingStore, timing: DetectionTiming = DetectionTiming(), makeRecorder: @escaping () -> any AudioRecorder,
@@ -187,7 +196,8 @@ public final class RecordingController {
     public func shutdown(now: Date) {
         guard let s = state.session else { return }
         state.session = nil
-        if s.lastActiveAt.timeIntervalSince(s.startedAt) < timing.minActive {
+        // Note request file stays: the restarted daemon resumes the note (until noteMaxDuration).
+        if s.note == nil && s.lastActiveAt.timeIntervalSince(s.startedAt) < timing.minActive {
             execute(.discard(s), now: now)
         } else {
             execute(.stop(s, .inactive), now: now)
@@ -197,25 +207,11 @@ public final class RecordingController {
     private func execute(_ a: RecorderAction, now: Date) {
         switch a {
         case .start(let event):
-            let id = newID().uuidString.lowercased()
-            let meta = RecordingMeta(id: id, startedAt: now, meeting: event.map(meetingMeta))
-            do { try store.save(meta) } catch {
-                // Not recording without a sidecar: audio we can't attribute/recover would just pile up.
-                log("recording: can't write \(store.metaURL(id).path): \(error) → not recording")
-                current = (meta, nil)
-                return
-            }
-            let r = makeRecorder()
-            r.prepare(meta)
-            do {
-                try r.start(mic: store.micURL(id), system: store.systemURL(id))
-                current = (meta, r)
-                log("recording \(id) started: \(describeMeeting(meta.meeting))")
-            } catch {
-                _ = r.stop()
-                current = (meta, nil)
-                log("recording \(id): ⚠️ capture failed to start: \(error)")
-            }
+            begin(RecordingMeta(id: newID().uuidString.lowercased(), startedAt: now, meeting: event.map(meetingMeta)))
+        case .startNote(let noteId):
+            begin(RecordingMeta(id: newID().uuidString.lowercased(), startedAt: now, noteId: noteId))
+        case .clearNoteRequest(let noteId):
+            onClearNoteRequest(noteId)
         case .attach(let event):
             guard var c = current else { return }
             c.meta.meeting = meetingMeta(event)
@@ -243,6 +239,27 @@ public final class RecordingController {
             guard let c = finishCapture() else { return }
             do { try store.delete(c.meta.id) } catch { log("recording \(c.meta.id): ⚠️ delete failed: \(error)") }
             log("recording \(c.meta.id) discarded (too short)")
+        }
+    }
+
+    private func begin(_ meta: RecordingMeta) {
+        let id = meta.id
+        do { try store.save(meta) } catch {
+            // Not recording without a sidecar: audio we can't attribute/recover would just pile up.
+            log("recording: can't write \(store.metaURL(id).path): \(error) → not recording")
+            current = (meta, nil)
+            return
+        }
+        let r = makeRecorder()
+        r.prepare(meta)
+        do {
+            try r.start(mic: store.micURL(id), system: meta.noteId == nil ? store.systemURL(id) : nil)
+            current = (meta, r)
+            log("recording \(id) started: \(meta.noteId == nil ? describeMeeting(meta.meeting) : "spoken note (mic only)")")
+        } catch {
+            _ = r.stop()
+            current = (meta, nil)
+            log("recording \(id): ⚠️ capture failed to start: \(error)")
         }
     }
 
@@ -325,7 +342,8 @@ public struct RecordingProcessor: Sendable {
                 let end = m.endedAt ?? m.startedAt
                 let upload = makeTranscriptUpload(
                     id: UUID(uuidString: m.id) ?? UUID(), startedAt: m.startedAt,
-                    duration: max(0, end.timeIntervalSince(m.startedAt)), meeting: m.meeting, transcription: t)
+                    duration: max(0, end.timeIntervalSince(m.startedAt)), meeting: m.meeting,
+                    kind: m.noteId == nil ? nil : .note, transcription: t)
                 // Queue persists before returning → safe to drop the audio after.
                 try await enqueue(upload)
                 log("recording \(m.id): \(upload.segments.count) segments queued for upload")
@@ -349,5 +367,5 @@ public struct RecordingProcessor: Sendable {
 /// `pa queue` line for a recording not yet transcribed: `recording <id> <state> attempts=N <lastError|—>`.
 public func formatRecordingLine(_ m: RecordingMeta) -> String {
     let state = m.endedAt == nil ? "recording" : m.attempts >= RecordingLimits.maxAttempts ? "failed" : "to-transcribe"
-    return "recording \(m.id) \(state) attempts=\(m.attempts) \(m.lastError ?? "—")"
+    return "recording \(m.id)\(m.noteId == nil ? "" : " note") \(state) attempts=\(m.attempts) \(m.lastError ?? "—")"
 }

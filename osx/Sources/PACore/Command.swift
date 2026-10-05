@@ -19,6 +19,8 @@ public enum Command: Equatable, Sendable {
     case calendars
     /// List pending + failed uploads.
     case queue
+    /// Spoken note: ask the running `pa run` to record the mic (start/stop/toggle) or show its state.
+    case note(NoteAction)
 }
 
 public struct TranscribeOptions: Equatable, Sendable {
@@ -71,6 +73,10 @@ public let usage = """
           List calendars as Source/Name<TAB>work|- ; put names in "workCalendars" in config.json.
       pa queue
           List recordings not yet transcribed + queued uploads (pending, failed/).
+      pa note (start | stop | toggle | status)
+          Spoken note: the running `pa run` records the mic only (no system audio) until stopped; uploaded as a
+          note (summarized as notes + todos). A call taking the mic ends it. Bind `toggle` to a key (Shortcuts).
+          Exit 1 if `pa run` isn't recording or a meeting recording refused it.
       pa transcribe [DIR] [--stamp yyyyMMdd-HHmmss] [--me NAME] [--no-diarize] [--upload]
           Transcribe a test-capture recording (mic = you, system = diarized) → DIR/pa-<stamp>-transcript.json.
           Default: newest recording in ~/pa-test-capture; --me defaults to your macOS full name.
@@ -140,6 +146,9 @@ public func parseCommand(_ args: [String]) throws(UsageError) -> Command {
     case "queue", "calendars":
         guard args.count == 1 else { throw UsageError("\(sub) takes no arguments") }
         return sub == "queue" ? .queue : .calendars
+    case "note":
+        guard args.count == 2, let a = NoteAction(rawValue: args[1]) else { throw UsageError("note needs start, stop, toggle or status") }
+        return .note(a)
     case "upload":
         guard args.count == 2, !args[1].isEmpty else { throw UsageError("upload needs a transcript JSON file") }
         return .upload(args[1])

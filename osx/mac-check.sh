@@ -2,12 +2,12 @@
 # Guided first-Mac run = all of osx/CHECKLIST.md: runs every step, pauses when you need to act, asks y/n where only
 # a human can judge, logs everything to ~/pa-test-capture/report-<stamp>/ (+ .tgz) to bring to the dev box.
 # usage: osx/mac-check.sh [--from STAGE | --only STAGE] [--seconds N] [--server URL] [--account NAME] [--tunnel SSH_HOST]
-# stages: prereqs build capture bench transcribe pair upload queue daemon live
+# stages: prereqs build capture bench transcribe pair upload queue daemon note live
 # --tunnel: script runs `ssh -L 4200:localhost:4200 HOST` itself (server = http://localhost:4200) and can cut it
 # for the outage test. bash 3.2 (stock macOS).
 set -uo pipefail
 
-STAGES="prereqs build capture bench transcribe pair upload queue daemon live"
+STAGES="prereqs build capture bench transcribe pair upload queue daemon note live"
 from= only= seconds=30 server= account= tunnel=
 while [ $# -gt 0 ]; do
   case "$1" in
@@ -367,6 +367,60 @@ st_daemon() {
   grep -q '^recording ' "$report/daemon-queue.log" && fail "recordings left untranscribed → daemon-queue.log" || pass "no recordings left"
 }
 
+# Spoken notes: `pa note` (bare binary, writes a request file) → pa run records the mic only → upload as kind note.
+# expect_exit NAME CODE CMD… → run expecting a specific exit status (pa note refusals exit 1).
+expect_exit() {
+  local name=$1 want=$2; shift 2
+  "$@" > "$report/$name.log" 2>&1; local rc=$?
+  sed 's/^/    /' "$report/$name.log"
+  if [ "$rc" -eq "$want" ]; then pass "$name exits $want"; else fail "$name exited $rc, expected $want → $name.log"; fi
+}
+
+st_note() {
+  need_build
+  [ -n "$server" ] || need_server
+  need_paired
+  local log="$report/note.log"
+  if launchctl print "gui/$(id -u)/com.bitofant.pa" >/dev/null 2>&1; then
+    pause "The LaunchAgent is installed: this test needs it stopped. Run osx/install.sh --uninstall in another terminal."
+  fi
+  expect_exit note-no-daemon 1 "$pa" note start
+  expect note-no-daemon "isn't recording" "pa note refuses without pa run"
+  : > "$log"
+  start_daemon "$log"
+  wait_for 30 "pa run polls mic/apps" grep -q 'meeting apps:' "$log"
+
+  # 1. Note with a video playing: mic only → the video must not be in the transcript.
+  pause "Start a YouTube video with speech (headphones on), keep it playing. Press a key, then dictate a note for ~30 s (\"note to self: … todo: …\")."
+  run note-start "$pa" note start && expect note-start '^pa note: recording note' "pa note start confirmed"
+  grep -q 'started: spoken note (mic only)' "$log" && pass "daemon recording a mic-only note" || fail "no 'started: spoken note' in note.log"
+  run note-status "$pa" note status && expect note-status 'recording note .* for [0-9]+s' "pa note status shows it"
+  pause "Keep talking ~30 s, then press a key to stop the note."
+  run note-stop "$pa" note stop && expect note-stop 'stopped, [0-9]+s' "pa note stop confirmed"
+  wait_for 300 "note transcribed + queued" grep -qE 'segments queued for upload' "$log"
+  wait_for 120 "note uploaded" grep -qE ' (uploaded|replaced) ' "$log"
+  ask "Web UI lists it as '(spoken note)'; only your words, none from the video"
+  ask "Its summary has Notes / Todos sections (wait for it; n = what's off)"
+
+  # 2. Short note via toggle: kept even though < 60 s.
+  pause "Press a key, say one sentence (~10 s), then press a key again."
+  run note-toggle-on "$pa" note toggle && expect note-toggle-on '^pa note: recording note' "toggle starts a note"
+  pause "Say your sentence now, then press a key."
+  run note-toggle-off "$pa" note toggle && expect note-toggle-off 'stopped, [0-9]+s' "toggle stops it"
+  wait_for 300 "short note queued (not discarded)" after_line "$log" 'stopped \(noteStopped\)' 'segments queued for upload'
+
+  # 3. A call takes the mic → note ends, call recorded; a note during the call is refused.
+  run note-before-call "$pa" note start
+  pause "Start a call (or a Voice Memos recording) now, so another app uses the mic. Press a key once it runs."
+  wait_for 30 "call ends the note" grep -q 'stopped (meetingStarted)' "$log"
+  wait_for 15 "call recording takes over" after_line "$log" 'stopped \(meetingStarted\)' 'recording [0-9a-f-]+ started: (ad-hoc|")'
+  run note-after-call "$pa" note status && expect note-after-call 'no note recording' "note request cleared"
+  expect_exit note-during-call 1 "$pa" note start
+  expect note-during-call 'refused' "note refused while a call is recorded"
+  pause "End the call, press a key."
+  stop_daemon
+}
+
 # Live preview (streaming ASR → server while recording). Lag = daemon's own measurement (speech → server accept).
 st_live() {
   need_build
@@ -412,5 +466,6 @@ want pair && { stage pair "pair this Mac with the server"; st_pair; }
 want upload && { stage upload "first real transcript on the server"; st_upload; }
 want queue && { stage queue "upload queue + pa run: outage, revoke, re-pair, delete"; st_queue; }
 want daemon && { stage daemon "pa run: detect a call → record → transcribe → upload; clean SIGTERM"; st_daemon; }
+want note && { stage note "pa note: mic-only spoken notes, toggle, call takes over"; st_note; }
 want live && { stage live "live preview: words in the web UI while recording, lag"; st_live; }
 finish

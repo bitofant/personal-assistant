@@ -23,14 +23,15 @@ const TITLE_RULES: [RegExp, MeetingType][] = [
 
 /** Confident rule, else null (→ LLM classify). Title beats attendee count: a 2-person interview is an interview. */
 export function classifyByRule(t: TranscriptUpload): MeetingType | null {
+  if (t.kind === "note") return "note";
   if (!t.meeting) return "adhoc";
   const title = t.meeting.title ?? "";
   for (const [re, type] of TITLE_RULES) if (re.test(title)) return type;
   return t.meeting.attendees.length === 2 ? "1on1" : null;
 }
 
-/** Types the LLM may pick: adhoc is decided by rule (no calendar event). */
-export const LLM_MEETING_TYPES = MEETING_TYPES.filter((m) => m.type !== "adhoc");
+/** Types the LLM may pick: adhoc (no calendar event) and note (`kind`) are decided by rule. */
+export const LLM_MEETING_TYPES = MEETING_TYPES.filter((m) => m.type !== "adhoc" && m.type !== "note");
 const CLASSIFY_EXCERPT_CHARS = 4000;
 
 export function buildClassifyPrompt(t: TranscriptUpload): ChatMessage[] {
@@ -121,7 +122,7 @@ export function formatSegments(segments: readonly TranscriptSegment[]): string {
 function metadataLines(t: TranscriptUpload): string[] {
   const m = t.meeting;
   return [
-    `Title: ${m?.title ?? "(none: unscheduled call)"}`,
+    `Title: ${m?.title ?? (t.kind === "note" ? "(none: spoken note)" : "(none: unscheduled call)")}`,
     `Recorded: ${t.startedAt} to ${t.endedAt} (${formatDuration(t.startedAt, t.endedAt)})`,
     m?.organizer ? `Organizer: ${formatPerson(m.organizer)}` : null,
     m ? `Attendees: ${m.attendees.length ? m.attendees.map(formatPerson).join(", ") : "(none listed)"}` : null,

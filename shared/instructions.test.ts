@@ -19,7 +19,7 @@ describe("resolveInstructions", () => {
   });
 
   it("every type has a built-in", () => {
-    for (const t of MEETING_TYPE_IDS) expect(BUILTIN_INSTRUCTIONS[t]).toMatch(/Summarize/);
+    for (const t of MEETING_TYPE_IDS) expect(BUILTIN_INSTRUCTIONS[t]).toMatch(/Sections:/);
   });
 });
 

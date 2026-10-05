@@ -14,7 +14,7 @@ import type {
   TranscriptListResponse,
   TranscriptSummaryResponse,
 } from "../shared/api.js";
-import { formatDateTime, formatDuration, formatOffset, formatValue } from "../shared/format.js";
+import { formatDateTime, formatDuration, formatOffset, formatValue, transcriptTitle } from "../shared/format.js";
 import { describeInstructionsSource, meetingTypeLabel } from "../shared/instructions.js";
 import { renderMarkdown } from "../shared/markdown.js";
 import { api, ApiError } from "./api.js";
@@ -210,7 +210,7 @@ function Transcripts() {
             <tr key={t.id}>
               <td>{formatDateTime(t.startedAt)}</td>
               <td>
-                <a href={transcriptHash(t.id)}>{t.title ?? "(ad-hoc call)"}</a>
+                <a href={transcriptHash(t.id)}>{transcriptTitle(t.title, t.kind)}</a>
                 {t.live && <span className={t.live === "live" ? "badge live-badge" : "badge"}>{t.live === "live" ? "● live" : "processing"}</span>}
               </td>
               <td>{formatDuration(t.startedAt, t.endedAt)}</td>
@@ -251,7 +251,7 @@ function Transcript({ id, seg }: { id: string; seg: number | null }) {
   const m = t.meeting;
   return (
     <article>
-      <h2>{m?.title ?? "(ad-hoc call)"}</h2>
+      <h2>{transcriptTitle(m?.title, t.kind)}</h2>
       <p className="meta">
         {formatDateTime(t.startedAt)} · {formatDuration(t.startedAt, t.endedAt)} · calendar {formatValue(m?.calendarName)} · device{" "}
         {formatValue(t.deviceName)}
@@ -273,7 +273,7 @@ function Transcript({ id, seg }: { id: string; seg: number | null }) {
       <p className="muted">
         ASR {t.asrModel} · diarization {formatValue(t.diarizationModel)} · received {formatDateTime(t.receivedAt)}
       </p>
-      <DeleteTranscript id={t.id} title={m?.title ?? "this ad-hoc call"} />
+      <DeleteTranscript id={t.id} title={m?.title ?? (t.kind === "note" ? "this spoken note" : "this ad-hoc call")} />
     </article>
   );
 }

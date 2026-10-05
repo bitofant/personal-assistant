@@ -46,11 +46,14 @@ export function parseTranscriptUpload(raw: unknown): TranscriptUpload {
   if (r.diarizationModel != null && typeof r.diarizationModel !== "string") errors.push("diarizationModel must be a string or null");
 
   const speakerEmbeddings = parseSpeakerEmbeddings(r.speakerEmbeddings, segments, errors);
+  if (r.kind != null && r.kind !== "note" && r.kind !== "meeting") errors.push(`kind must be "note", "meeting" or null`);
 
   if (errors.length) throw new HttpError(400, `Invalid transcript:\n  - ${errors.slice(0, 20).join("\n  - ")}`);
   const t: TranscriptUpload = { id, startedAt: startedAt!, endedAt: endedAt!, meeting, segments, asrModel: asrModel!, diarizationModel: str(r.diarizationModel) };
   // Key only when present: `data` (= transcript without it) must stay byte-identical for old clients' retries.
   if (speakerEmbeddings) t.speakerEmbeddings = speakerEmbeddings;
+  // Same: only notes carry the key.
+  if (r.kind === "note") t.kind = "note";
   return t;
 }
 
@@ -213,6 +216,7 @@ interface Row {
   calendar_name: string | null;
   attendee_count: number | null;
   segment_count: number;
+  kind?: string | null;
   data: string;
   received_at: number;
   updated_at: number;
@@ -228,10 +232,11 @@ export function deviceUploadStats(db: Db): Map<string, { count: number; lastRece
   return new Map(rows.map((r) => [r.device_id, { count: r.n, lastReceivedAt: r.last }]));
 }
 
-const LIST_COLUMNS = "id, device_id, started_at, ended_at, title, calendar_name, attendee_count, segment_count";
+// kind read from `data` (no index column: never filtered on, and no migration/backfill needed).
+const LIST_COLUMNS = "id, device_id, started_at, ended_at, title, calendar_name, attendee_count, segment_count, json_extract(data, '$.kind') AS kind";
 
 function toListItem(r: Row, deviceNames: Map<string, string>): TranscriptListItem {
-  return {
+  const item: TranscriptListItem = {
     id: r.id,
     title: r.title,
     startedAt: r.started_at,
@@ -241,6 +246,8 @@ function toListItem(r: Row, deviceNames: Map<string, string>): TranscriptListIte
     segmentCount: r.segment_count,
     deviceName: deviceNames.get(r.device_id) ?? null,
   };
+  if (r.kind === "note") item.kind = "note";
+  return item;
 }
 
 export function listTranscripts(db: Db, deviceNames: Map<string, string>): TranscriptListItem[] {

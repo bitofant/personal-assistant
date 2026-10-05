@@ -1,7 +1,13 @@
 import { describe, expect, it } from "vitest";
-import { formatDateTime, formatDuration, formatOffset, formatValue, MISSING } from "./format.js";
+import { formatDateTime, formatDuration, formatOffset, formatValue, MISSING, transcriptTitle } from "./format.js";
 
 describe("format", () => {
+  it("transcriptTitle", () => {
+    expect(transcriptTitle("Sync", "note")).toBe("Sync");
+    expect(transcriptTitle(null, "note")).toBe("(spoken note)");
+    expect(transcriptTitle(null)).toBe("(ad-hoc call)");
+  });
+
   it("formatOffset", () => {
     expect(formatOffset(0)).toBe("0:00");
     expect(formatOffset(75.9)).toBe("1:15");
