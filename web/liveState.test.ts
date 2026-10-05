@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { LiveSegment } from "../shared/api.js";
-import { isFollowing, LIVE_POLL_MS, liveLines, liveStatusView, mergeLive } from "./liveState.js";
+import { isFollowing, LIVE_POLL_MS, LIVE_START_GRACE_MS, liveLines, liveStatusView, mergeLive, waitForFirstChunk } from "./liveState.js";
 
 const seg = (stream: "mic" | "system", start: number, text: string, end = start + 1): LiveSegment => ({
   stream,
@@ -45,5 +45,13 @@ describe("isFollowing", () => {
     expect(isFollowing(900, 100, 1000)).toBe(true);
     expect(isFollowing(850, 100, 1000)).toBe(true);
     expect(isFollowing(500, 100, 1000)).toBe(false);
+  });
+});
+
+describe("waitForFirstChunk", () => {
+  it("keeps waiting on 404 only right after opening", () => {
+    expect(waitForFirstChunk(1000, 1000)).toBe(true);
+    expect(waitForFirstChunk(1000, 1000 + LIVE_START_GRACE_MS - 1)).toBe(true);
+    expect(waitForFirstChunk(1000, 1000 + LIVE_START_GRACE_MS)).toBe(false);
   });
 });

@@ -2,18 +2,20 @@ import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import type { LiveSegment, LiveTranscriptResponse } from "../shared/api.js";
 import { formatDateTime, formatOffset, formatValue, transcriptTitle } from "../shared/format.js";
 import { api, ApiError } from "./api.js";
-import { isFollowing, liveLines, liveStatusView, mergeLive } from "./liveState.js";
+import { isFollowing, liveLines, liveStatusView, LIVE_POLL_MS, mergeLive, waitForFirstChunk } from "./liveState.js";
 import { ErrorLine } from "./ui.js";
 
 /**
  * Live preview of a meeting still being recorded (no final transcript yet). Polls new segments by cursor; when the
- * final transcript arrives, `onFinal` swaps in the normal detail page. `onMissing` = neither exists (404).
+ * final transcript arrives, `onFinal` swaps in the normal detail page. `onMissing` = neither exists (404) after the
+ * start grace (`waitForFirstChunk`).
  */
 export function LiveTranscript({ id, onFinal, onMissing }: { id: string; onFinal: () => void; onMissing: () => void }) {
   const [head, setHead] = useState<LiveTranscriptResponse | null>(null);
   const [segments, setSegments] = useState<LiveSegment[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [now, setNow] = useState(Date.now());
+  const [waiting, setWaiting] = useState(false);
   const cursor = useRef(0);
   const end = useRef<HTMLDivElement>(null);
   // Decided before new lines render: was the reader at the bottom?
@@ -24,6 +26,7 @@ export function LiveTranscript({ id, onFinal, onMissing }: { id: string; onFinal
   useEffect(() => {
     let stop = false;
     let timer: ReturnType<typeof setTimeout> | undefined;
+    const openedAt = Date.now();
     const tick = async () => {
       try {
         const r = await api<LiveTranscriptResponse>(`${path}?after=${cursor.current}`);
@@ -36,10 +39,16 @@ export function LiveTranscript({ id, onFinal, onMissing }: { id: string; onFinal
         setHead(r);
         setNow(Date.now());
         setError(null);
+        setWaiting(false);
         timer = setTimeout(() => void tick(), liveStatusView(r, Date.now()).pollMs ?? 2000);
       } catch (e) {
         if (stop) return;
-        if (e instanceof ApiError && e.status === 404) return onMissing();
+        if (e instanceof ApiError && e.status === 404) {
+          if (!waitForFirstChunk(openedAt, Date.now())) return onMissing();
+          setWaiting(true);
+          timer = setTimeout(() => void tick(), LIVE_POLL_MS);
+          return;
+        }
         // Keep polling through a blip (server restart, Wi-Fi).
         setError((e as Error).message);
         timer = setTimeout(() => void tick(), 5000);
@@ -58,7 +67,10 @@ export function LiveTranscript({ id, onFinal, onMissing }: { id: string; onFinal
   }, [segments]);
 
   const lines = useMemo(() => liveLines(segments), [segments]);
-  if (!head) return error ? <ErrorLine error={error} /> : <p className="muted">Loading…</p>;
+  if (!head) {
+    if (error) return <ErrorLine error={error} />;
+    return <p className="muted">{waiting ? "Waiting for the live preview (appears a few seconds after a recording starts)…" : "Loading…"}</p>;
+  }
   const m = head.meeting;
   return (
     <article>
