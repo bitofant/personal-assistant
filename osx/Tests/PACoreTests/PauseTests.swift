@@ -195,6 +195,22 @@ private func tempDir() -> URL {
         #expect(s.state == .notRunning && s.paused)
     }
 
+    @Test func liveLink() {
+        let cfg = AgentConfig(serverURL: "https://pa.example.com/")
+        #expect(status([meeting]).recordingId == "m")
+        #expect(liveTranscriptURL(status([meeting]), config: cfg)?.absoluteString == "https://pa.example.com/#/t/m")
+        #expect(liveTranscriptURL(status([noteRec], note: n1), config: cfg)?.absoluteString == "https://pa.example.com/#/t/n")
+        #expect(liveTranscriptURL(status(), config: cfg) == nil)
+        // Crash-leftover sidecar isn't a live recording.
+        #expect(liveTranscriptURL(status(running: false, [meeting]), config: cfg) == nil)
+        var off = cfg
+        off.liveTranscription = false
+        #expect(liveTranscriptURL(status([meeting]), config: off) == nil)
+        #expect(liveTranscriptURL(status([meeting]), config: AgentConfig()) == nil)
+        #expect(liveTranscriptURL(status([meeting]), config: AgentConfig(serverURL: "http://lan-box:4200")) == nil)
+        #expect(liveTranscriptURL(status([meeting]), config: nil) == nil)
+    }
+
     @Test func refusedNote() {
         #expect(!noteWasRefused(id: "n1", note: n1, recordings: []))
         #expect(!noteWasRefused(id: "n1", note: nil, recordings: [noteRec]))

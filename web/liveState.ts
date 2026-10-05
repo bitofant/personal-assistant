@@ -31,6 +31,10 @@ export const LIVE_POLL_MS = 2000;
 /** No chunk for this long while "live" → probably paused/offline (chunks come every few s while anyone talks). */
 export const LIVE_QUIET_MS = 60_000;
 
+/** 404 this soon after opening = recording just started, first chunk not in yet (menu bar link) → keep waiting. */
+export const LIVE_START_GRACE_MS = 30_000;
+export const waitForFirstChunk = (openedAt: number, now: number) => now - openedAt < LIVE_START_GRACE_MS;
+
 export interface LiveView {
   message: string;
   tone: "info" | "warn";

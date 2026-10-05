@@ -74,6 +74,7 @@ final class MenuController: NSObject, NSMenuDelegate {
             ? action("Resume recording", #selector(resumeRecording))
             : action("Pause recording", #selector(pauseRecording)))
         menu.addItem(.separator())
+        if liveURL() != nil { menu.addItem(action("Open live transcript", #selector(openLive))) }
         if webURL() != nil { menu.addItem(action("Open web UI", #selector(openWeb))) }
         menu.addItem(action("Open log", #selector(openLog)))
         menu.addItem(action("Quit PA menu", #selector(quit)))
@@ -115,9 +116,14 @@ final class MenuController: NSObject, NSMenuDelegate {
 
     @objc private func resumeRecording() { attempt("resume") { try PauseStore(url: paths.pause).resume() } }
 
-    private func webURL() -> URL? {
-        guard let data = try? Data(contentsOf: paths.config), let s = (try? parseAgentConfig(data))?.serverURL else { return nil }
-        return URL(string: s)
+    private func config() -> AgentConfig? { (try? Data(contentsOf: paths.config)).flatMap { try? parseAgentConfig($0) } }
+
+    private func webURL() -> URL? { config()?.serverURL.flatMap { URL(string: $0) } }
+
+    private func liveURL() -> URL? { liveTranscriptURL(status, config: config()) }
+
+    @objc private func openLive() {
+        if let u = liveURL() { NSWorkspace.shared.open(u) }
     }
 
     @objc private func openWeb() {

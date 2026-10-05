@@ -444,6 +444,7 @@ st_menu() {
   pause "Start a call (or a Voice Memos recording) with audio playing; press a key once it runs."
   wait_for 30 "recording started" grep -qE 'recording [0-9a-f-]+ started' "$log"
   ask "Icon = record dot; menu says 'Recording: … · N min'"
+  ask "Menu → Open live transcript: browser shows this call ('Waiting for the live preview' at first), words within ~15 s (skip if unpaired/offline)"
   echo "  keep the call going 70 s (≥60 s → kept, not discarded) …"; sleep 70
   pause "Menu → Pause recording (keep the call running), then press a key."
   wait_for 15 "pause picked up" grep -q 'recording paused' "$log"

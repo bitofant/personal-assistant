@@ -32,7 +32,7 @@ Stages: `prereqs build capture bench transcribe pair upload queue daemon note me
   `WavWriter` / `MicCapture` / `SystemAudioTap` / `CaptureRecorder`). After `daemon`: `--only note` (~10 min,
   video + a call app): `pa note` start/stop/toggle, mic-only, a call ending the note. New uncompiled code:
   `Sources/pa/Note.swift` + note polling in `Run.swift`. After `note`: `--only menu` (~5 min, a call app):
-  menu bar icon states, Pause/Resume (call stopped + kept), Start/Stop note while paused, `pa pause`/`pa resume`,
+  menu bar icon states, Open live transcript, Pause/Resume (call stopped + kept), Start/Stop note while paused, `pa pause`/`pa resume`,
   Quit. New uncompiled code: `Sources/pa-menu/main.swift`, `Sources/pa/Pause.swift`, pause polling in `Run.swift`.
 - **Build fails** (expected: the `pa run` daemon code has never been compiled; errors in `Sources/pa/Run.swift` /
   `Calendars.swift` / `Signals.swift` / `CaptureRecorder.swift`): fix, note each fix + why, then

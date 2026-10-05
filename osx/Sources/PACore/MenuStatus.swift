@@ -19,6 +19,8 @@ public struct MenuStatus: Equatable, Sendable {
     public var noteRequested: Bool
     public var pendingUploads: Int
     public var failedUploads: Int
+    /// Open recording's id (= upload id = web transcript id); nil = not recording.
+    public var recordingId: String?
     public var headline: String
     /// SF Symbol for the status item.
     public var symbolName: String
@@ -30,10 +32,12 @@ public func menuStatus(
     pendingUploads: Int, failedUploads: Int, now: Date
 ) -> MenuStatus {
     let state: MenuState
+    var recordingId: String?
     if !daemonRunning {
         state = .notRunning
     } else if let r = recordings.filter({ $0.endedAt == nil }).max(by: { ($0.startedAt, $0.id) < ($1.startedAt, $1.id) }) {
         state = r.noteId != nil ? .note(since: r.startedAt) : .meeting(r.meeting, since: r.startedAt)
+        recordingId = r.id
     } else {
         state = pause != nil ? .paused : .idle
     }
@@ -60,7 +64,7 @@ public func menuStatus(
     if pause != nil && state != .paused { headline += " (meetings paused)" }
     return MenuStatus(
         state: state, paused: pause != nil, noteRequested: note != nil, pendingUploads: pendingUploads,
-        failedUploads: failedUploads, headline: headline, symbolName: symbol)
+        failedUploads: failedUploads, recordingId: recordingId, headline: headline, symbolName: symbol)
 }
 
 /// Thin file wrapper (shared by `pa status` and the menu app). Unreadable files count as absent.
@@ -74,6 +78,16 @@ public func readMenuStatus(_ paths: AgentPaths, now: Date = Date()) -> MenuStatu
         pendingUploads: uploads.pending,
         failedUploads: uploads.parked,
         now: now)
+}
+
+/// Web page of the running recording (live preview, then the final transcript; same id). nil = not recording, live
+/// preview off (page would 404 until transcribed), or no valid server URL.
+public func liveTranscriptURL(_ status: MenuStatus, config: AgentConfig?) -> URL? {
+    guard let id = status.recordingId, let config, config.liveEnabled, let s = config.serverURL,
+          let server = try? parseServerURL(s), let frag = id.addingPercentEncoding(withAllowedCharacters: .alphanumerics.union(["-"]))
+    else { return nil }
+    // Hash route = `web/routes.ts` `transcriptHash`.
+    return URL(string: server.absoluteString + "/#/t/" + frag)
 }
 
 private func minutes(_ s: TimeInterval) -> String { "\(max(0, Int(s / 60))) min" }
