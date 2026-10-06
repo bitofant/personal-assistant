@@ -22,14 +22,14 @@ final class MicCapture: @unchecked Sendable {
         // Read format after switching device: changes channel count/rate.
         let format = input.outputFormat(forBus: 0)
         let actual = currentDevice(input)
-        print("mic: \(actual.map(deviceName) ?? "?"), \(describe(format))")
+        print("mic: \(actual.map(deviceName) ?? "?"), \(describe(format)) → WAV \(describe(WavWriter.fileFormat))")
         if let wanted, actual != wanted { print("mic: ⚠️ wanted \(deviceName(wanted)), unit reports another device") }
         // Device/format switch stops the engine silently (live: fires when the tap aggregate is created) → restart.
         observer = NotificationCenter.default.addObserver(
             forName: .AVAudioEngineConfigurationChange, object: engine, queue: nil
         ) { [weak self] _ in self?.configurationChanged() }
 
-        let w = try WavWriter(url: url, format: format, sink: sink)
+        let w = try WavWriter(url: url, inputFormat: format, label: "mic", sink: sink)
         writer = w
         input.installTap(onBus: 0, bufferSize: 4096, format: format) { buffer, _ in
             w.write(buffer)
@@ -41,8 +41,8 @@ final class MicCapture: @unchecked Sendable {
     private func configurationChanged() {
         let f = engine.inputNode.outputFormat(forBus: 0)
         print("mic: ⚠️ engine configuration changed (running: \(engine.isRunning), now \(describe(f)))")
-        // WAV format is fixed at start; a different format would corrupt the file.
-        guard let w = writer, f.sampleRate == w.format.sampleRate, f.channelCount == w.format.channelCount else {
+        // Tap + writer were set up for the start format; a different one would be misread.
+        guard let w = writer, f.sampleRate == w.inputFormat.sampleRate, f.channelCount == w.inputFormat.channelCount else {
             print("mic: ⚠️ format changed mid-recording → not restarting")
             return
         }

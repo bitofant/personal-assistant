@@ -48,8 +48,8 @@ final class SystemAudioTap {
         guard let format = AVAudioFormat(streamDescription: &asbd) else {
             throw CoreAudioError(what: "tap format unsupported by AVAudioFormat", status: -1)
         }
-        print("system: tap format \(describe(format))")
-        let w = try WavWriter(url: url, format: format, sink: sink)
+        print("system: tap format \(describe(format)) → WAV \(describe(WavWriter.fileFormat))")
+        let w = try WavWriter(url: url, inputFormat: format, label: "system", sink: sink)
         writer = w
 
         try check(AudioDeviceCreateIOProcIDWithBlock(&procID, aggregateID, queue) { _, input, _, _, _ in
