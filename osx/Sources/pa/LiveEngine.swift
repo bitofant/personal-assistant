@@ -1,10 +1,10 @@
-// preconcurrency: AVAudioPCMBuffer isn't Sendable; buffers are copied and handed over once (never touched again).
+// preconcurrency: AVAudioPCMBuffer isn't Sendable; WavWriter hands each buffer over once (never touched again).
 @preconcurrency import AVFoundation
 import FluidAudio
 import Foundation
 import PACore
 
-// Live preview while recording (written vs FluidAudio v0.17.4 source, not compiled yet). Capture callbacks → copy →
+// Live preview while recording (written vs FluidAudio v0.17.4 source, not compiled yet). WavWriter queue (16 kHz mono) →
 // per-stream `SlidingWindowAsrManager` → PACore `LiveWordAssembler` / `LiveChunkBuilder` / `LiveOutbox` → server.
 // Best effort: any failure here only loses the preview; WAVs + the offline pass make the real transcript.
 
@@ -35,19 +35,6 @@ actor LiveModels {
 }
 
 private struct PCM: @unchecked Sendable { let buffer: AVAudioPCMBuffer }
-
-/// Capture buffers are reused by AVAudioEngine after the tap block returns → copy before queueing.
-private func copyPCM(_ b: AVAudioPCMBuffer) -> AVAudioPCMBuffer? {
-    guard b.frameLength > 0, let out = AVAudioPCMBuffer(pcmFormat: b.format, frameCapacity: b.frameLength) else { return nil }
-    out.frameLength = b.frameLength
-    let src = UnsafeMutableAudioBufferListPointer(UnsafeMutablePointer(mutating: b.audioBufferList))
-    let dst = UnsafeMutableAudioBufferListPointer(out.mutableAudioBufferList)
-    for (s, d) in zip(src, dst) {
-        guard let from = s.mData, let to = d.mData else { continue }
-        memcpy(to, from, Int(min(s.mDataByteSize, d.mDataByteSize)))
-    }
-    return out
-}
 
 typealias LiveSend = @Sendable (LiveChunk) async -> Result<LiveChunkResponse, ApiError>
 
@@ -217,10 +204,11 @@ final class LivePreview: @unchecked Sendable {
         // No `asr.cleanup()`: it unloads models, and these are shared with later recordings (LiveModels).
     }
 
-    /// For `WavWriter`: called per captured buffer, any thread.
+    /// For `WavWriter`: per written buffer, on its queue. Already 16 kHz mono Float32 (FluidAudio's fast path, no
+    /// per-buffer resample) and fresh per call → no copy.
     func sink(_ s: LiveStream) -> @Sendable (AVAudioPCMBuffer) -> Void {
         let feed = feeds[s]
-        return { b in if let copy = copyPCM(b) { feed?.yield(PCM(buffer: copy)) } }
+        return { b in feed?.yield(PCM(buffer: b)) }
     }
 
     func setMeeting(_ m: MeetingMeta?) {

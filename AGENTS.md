@@ -292,7 +292,12 @@ The repo has a few components:
   - Creating the tap aggregate fires `AVAudioEngineConfigurationChange` on the mic engine → engine stops (verified live) → now restarted in the observer.
   - Third live run (Zoom, QuadCast S, External Headphones, no VP): tap + mic both record (verified live).
   - Aggregate clocked by default **output** device (where meeting plays), not the system/alert-sound device.
-  - Tap = `CATapDescription` (global, no exclusions, `muteBehavior=.unmuted`, private) → private aggregate device (default output as main sub-device, tap auto-start) → IOProc block → `AVAudioFile`.
+  - Tap = `CATapDescription` (global, no exclusions, `muteBehavior=.unmuted`, private) → private aggregate device (default output as main sub-device, tap auto-start) → IOProc block → `WavWriter`.
+  - **WAV format = FluidAudio's model input (built 2026-10-06, never compiled; PACore downmix Linux-tested + mutation-checked):** 16 kHz mono Float32 non-interleaved (`CaptureFormat`, = v0.17.4 `AudioConverter` default target) ≈ 230 MB/h/stream (was device-native 48 kHz stereo ≈ 1.4 GB/h). User decision: exactly FluidAudio's format (not int16).
+    - `WavWriter`: capture callback only copies + enqueues; serial queue per stream does meter (raw input) → `downmix` (mean of channels, PACore) → resample → file write → live sink. Stats `writer backlog max N` = queue depth (should stay small).
+    - Downmix ourselves, not AVAudioConverter: its 2→1 remap without `downmix` keeps channel 0 only (Apple docs, not verified live) → a right-only mic would be silent.
+    - One `AVAudioConverter` per stream for the whole recording (`.noDataNow` between buffers, `.endOfStream` flush in `close()`): FluidAudio's streaming path builds a fresh converter per buffer → filter restarts at every edge. Settings = FluidAudio's (Mastering, max quality).
+    - Input must be Float32 (AVAudioEngine + taps are) → else that stream fails at start, other stream kept.
   - Denied system-audio permission = **silent buffers, no error** → summary flags all-zero streams. Don't drop this check.
 - **Meeting detection (PACore built, Linux-tested + mutation-checked; wired in `pa run`, not run on the Mac):** `MeetingDetector.swift` `detectStep(state, input) → (state, [RecorderAction])`, pure, called every few s; actions `start(event?)` / `attach(event)` / `stop(session, reason)` / `discard(session)`.
   - Inputs: `eligibleEvents` (work calendars), `micInUse`, `meetingAppRunning` (Zoom/Teams/Webex/browser), `now`.
@@ -312,9 +317,9 @@ The repo has a few components:
   - ⚠️ Single instance: `flock` on app-support `run.lock`, taken **before** `recoverInterrupted` (else it would mark the other process's live recording ended). Second `pa run` waits (polls 5 s). `--no-record` takes no lock (double upload = harmless).
   - SIGTERM/SIGINT: DispatchSource (signal ignored first) cancels the record task → `controller.shutdown` (≥ minActive kept, else discarded) → WAVs closed → exit 0 without waiting for a transcription (restarts from sidecar). Default SIGTERM would leave WAV headers unfinalized.
   - Logging: `daemonLog` = stdout (launchd → log file) + `os.Logger` (`.public`).
-  - Known limits: WAV = float32 48 kHz stereo ≈ 1.4 GB/h for the tap (+ mic), 4 GB WAV cap ≈ 2.9 h; file I/O still in the capture callbacks (spike-grade `WavWriter`).
+  - Known limits: WAV ≈ 230 MB/h per stream (4 GB WAV cap ≈ 18 h); writer queue unbounded (allocates per buffer; not strictly realtime-safe, but no I/O in callbacks).
 - **Live preview (PACore built + Linux-tested + mutation-checked; `pa/LiveEngine.swift` written vs FluidAudio v0.17.4 source, never compiled):**
-  - `WavWriter(sink:)` gets every buffer written to the WAV → `LivePreview.sink` copies it (AVAudioEngine reuses buffers) → unbounded AsyncStream (dropping audio would shift later timestamps) → per-stream `SlidingWindowAsrManager`.
+  - `WavWriter(sink:)` gets every converted (16 kHz mono) buffer written to the WAV, on its queue, fresh per call → `LivePreview.sink` yields it uncopied → unbounded AsyncStream (dropping audio would shift later timestamps) → per-stream `SlidingWindowAsrManager`.
   - Config 8 s left + 5 s chunk + 2 s right = model's fixed 15 s window → word lag 2–7 s + send + 2 s web poll. Default 11 s chunk = up to 13 s. Smaller chunk = more chunk-edge errors; tune from `mac-check live`.
   - FluidAudio update = that window's new tokens only, on the stream timeline (checked in source; assumed = since recording start, verify on Mac). `isConfirmed` = confidence, not stability → all updates used.
   - ⚠️ `LiveWordAssembler` holds each window's last word back: next window may continue it (split word) or re-decode it whole (FluidAudio #897; overlap in time → held copy dropped). Emitting it early = duplicate/split words. Mutation-checked both ways.
